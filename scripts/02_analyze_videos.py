@@ -116,7 +116,12 @@ async def main(args: argparse.Namespace) -> None:
             model=settings.gemini.model,
             rate_limiter=rate_limiter,
         )
-        analyzer = VideoAnalyzer(gemini_client, skip_second_pass=True)
+        analyzer = VideoAnalyzer(
+            gemini_client,
+            download_dir="data/videos/downloads",
+            skip_second_pass=False,
+            cleanup_after=True,
+        )
         state_file = output_dir / "processing_state.json"
         processor = BatchProcessor(
             analyzer=analyzer,

@@ -1,9 +1,11 @@
-"""Core two-pass video analysis using Gemini."""
+"""Core video analysis: download → upload to Gemini → multimodal analysis."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -22,22 +24,16 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class KeyTimestamp(BaseModel):
-    """A notable moment in the video."""
-
     time: str = Field(description="Timestamp in MM:SS or HH:MM:SS format")
     description: str = Field(description="What happens at this moment")
 
 
 class IndicatorInfo(BaseModel):
-    """A technical indicator with its parameters."""
-
     name: str
     params: dict = Field(default_factory=dict)
 
 
 class StrategyOverview(BaseModel):
-    """Brief overview of a strategy found during first pass."""
-
     name: str
     description: str = ""
     timeframes: list[str] = Field(default_factory=list)
@@ -45,16 +41,8 @@ class StrategyOverview(BaseModel):
 
 
 class FirstPassResult(BaseModel):
-    """Result of the first (discovery) pass over a video."""
-
     topic: str = ""
-    content_type: str = Field(
-        default="other",
-        description=(
-            "One of: strategy_tutorial, market_analysis, indicator_explanation, "
-            "backtesting, trade_review, educational, other"
-        ),
-    )
+    content_type: str = Field(default="other")
     strategies_overview: list[StrategyOverview] = Field(default_factory=list)
     indicators: list[IndicatorInfo] = Field(default_factory=list)
     chart_annotations: str = ""
@@ -62,8 +50,6 @@ class FirstPassResult(BaseModel):
 
 
 class EntryExitCondition(BaseModel):
-    """A single entry or exit condition for a strategy."""
-
     description: str
     indicator: str = ""
     condition: str = ""
@@ -71,43 +57,23 @@ class EntryExitCondition(BaseModel):
 
 
 class StopTakeProfitRule(BaseModel):
-    """Stop-loss or take-profit rule."""
-
-    type: str = Field(
-        default="none_mentioned",
-        description=(
-            "One of: fixed_pips, atr_multiple, swing_high_low, percentage, "
-            "risk_reward_ratio, indicator_based, none_mentioned"
-        ),
-    )
+    type: str = Field(default="none_mentioned")
     value: float | None = None
     description: str = ""
 
 
 class SecondPassResult(BaseModel):
-    """Result of the second (deep-dive) pass for a single strategy."""
-
     strategy_name: str
     entry_conditions: list[EntryExitCondition] = Field(default_factory=list)
     exit_conditions: list[EntryExitCondition] = Field(default_factory=list)
-    indicator_params: dict = Field(
-        default_factory=dict,
-        description="Mapping of indicator name -> parameter dict",
-    )
+    indicator_params: dict = Field(default_factory=dict)
     stop_loss_rules: StopTakeProfitRule = Field(default_factory=StopTakeProfitRule)
     take_profit_rules: StopTakeProfitRule = Field(default_factory=StopTakeProfitRule)
     position_sizing: str = "not_mentioned"
-    quantifiability_score: int = Field(
-        default=1,
-        ge=1,
-        le=10,
-        description="1-10 score of how easily this strategy can be coded",
-    )
+    quantifiability_score: int = Field(default=1, ge=1, le=10)
 
 
 class VideoAnalysisResult(BaseModel):
-    """Combined result of both analysis passes for a video."""
-
     video_id: str
     analysis_timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     first_pass: FirstPassResult
@@ -115,7 +81,7 @@ class VideoAnalysisResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# First-pass response schema (for Gemini structured output)
+# JSON schemas for structured Gemini output
 # ---------------------------------------------------------------------------
 
 _FIRST_PASS_SCHEMA: dict = {
@@ -218,104 +184,167 @@ _SECOND_PASS_SCHEMA: dict = {
 
 
 # ---------------------------------------------------------------------------
+# Video downloader (yt-dlp)
+# ---------------------------------------------------------------------------
+
+class VideoDownloader:
+    """Download YouTube videos to local files using yt-dlp."""
+
+    def __init__(self, download_dir: Path) -> None:
+        self._download_dir = Path(download_dir)
+        self._download_dir.mkdir(parents=True, exist_ok=True)
+
+    async def download(self, video: VideoInfo) -> Path:
+        """Download a video and return the local file path."""
+        output_template = str(self._download_dir / f"{video.id}.%(ext)s")
+
+        # Check if already downloaded
+        for existing in self._download_dir.glob(f"{video.id}.*"):
+            if existing.suffix in ('.mp4', '.webm', '.mkv'):
+                logger.info("Video %s already downloaded: %s", video.id, existing)
+                return existing
+
+        import yt_dlp
+
+        opts = {
+            "format": "best[height<=720]/best",
+            "outtmpl": output_template,
+            "quiet": True,
+            "no_warnings": True,
+        }
+
+        logger.info("Downloading video %s: %s", video.id, video.title)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._do_download, video.get_url(), opts)
+
+        # Find the downloaded file
+        for f in self._download_dir.glob(f"{video.id}.*"):
+            if f.suffix in ('.mp4', '.webm', '.mkv', '.mp4.part'):
+                if not f.suffix.endswith('.part'):
+                    logger.info("Downloaded: %s (%.1f MB)", f.name, f.stat().st_size / 1e6)
+                    return f
+
+        raise RuntimeError(f"Download completed but file not found for {video.id}")
+
+    @staticmethod
+    def _do_download(url: str, opts: dict) -> None:
+        import yt_dlp
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+
+    def cleanup(self, video_id: str) -> None:
+        """Delete downloaded video file to save disk space."""
+        for f in self._download_dir.glob(f"{video_id}.*"):
+            try:
+                f.unlink()
+                logger.debug("Deleted %s", f)
+            except OSError:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # Analyzer
 # ---------------------------------------------------------------------------
 
 class VideoAnalyzer:
-    """Two-pass video analyzer: discovery pass then per-strategy deep dive."""
+    """Download → Upload to Gemini File API → Multimodal analysis."""
 
-    def __init__(self, gemini_client: GeminiClient, skip_second_pass: bool = False) -> None:
+    def __init__(
+        self,
+        gemini_client: GeminiClient,
+        download_dir: Path | str = "data/videos/downloads",
+        skip_second_pass: bool = False,
+        cleanup_after: bool = True,
+    ) -> None:
         self._gemini = gemini_client
+        self._downloader = VideoDownloader(Path(download_dir))
         self._skip_second_pass = skip_second_pass
+        self._cleanup_after = cleanup_after
 
     async def analyze_video(self, video: VideoInfo) -> VideoAnalysisResult:
-        """Run the full two-pass analysis pipeline for a single video.
-
-        1. First pass  -- identify strategies, indicators, key moments.
-        2. Second pass -- for each strategy found, extract precise trading rules.
-        """
+        """Full pipeline: download → upload → first pass → second pass → cleanup."""
         import json as _json
 
-        youtube_url = video.get_url()
+        gemini_file = None
+        try:
+            # Step 1: Download video
+            local_path = await self._downloader.download(video)
 
-        # -- First pass -------------------------------------------------------
-        logger.info("First pass analysis for video %s: %s", video.id, video.title)
-        first_pass_prompt = self._build_first_pass_prompt(video)
-
-        raw_first = await self._gemini.analyze_video(
-            youtube_url=youtube_url,
-            prompt=first_pass_prompt,
-            response_schema=_FIRST_PASS_SCHEMA,
-            video_duration_seconds=video.duration,
-        )
-
-        first_pass = FirstPassResult.model_validate(raw_first)
-        logger.info(
-            "First pass complete: %d strategies found, content_type=%s",
-            len(first_pass.strategies_overview),
-            first_pass.content_type,
-        )
-
-        # Serialise first-pass result for second-pass context
-        first_pass_summary = _json.dumps(raw_first, ensure_ascii=False, indent=2)
-
-        # -- Second pass (per strategy) ---------------------------------------
-        second_pass_results: list[SecondPassResult] = []
-
-        if self._skip_second_pass:
-            logger.info("Skipping second pass (skip_second_pass=True)")
-            return VideoAnalysisResult(
-                video_id=video.id,
-                first_pass=first_pass,
-                second_pass=[],
+            # Step 2: Upload to Gemini File API
+            gemini_file = await asyncio.to_thread(
+                self._gemini.upload_video, local_path
             )
 
-        for strategy in first_pass.strategies_overview:
-            logger.info(
-                "Second pass analysis for strategy '%s' in video %s",
-                strategy.name,
-                video.id,
-            )
-            second_pass_prompt = self._build_second_pass_prompt(
-                video, strategy, first_pass_summary
-            )
+            # Step 3: First pass analysis
+            logger.info("First pass for %s: %s", video.id, video.title)
+            first_pass_prompt = self._build_first_pass_prompt(video)
 
-            raw_second = await self._gemini.analyze_video(
-                youtube_url=youtube_url,
-                prompt=second_pass_prompt,
-                response_schema=_SECOND_PASS_SCHEMA,
+            raw_first = await self._gemini.analyze_uploaded_video(
+                file=gemini_file,
+                prompt=first_pass_prompt,
+                response_schema=_FIRST_PASS_SCHEMA,
                 video_duration_seconds=video.duration,
             )
 
-            result = SecondPassResult.model_validate(raw_second)
-            second_pass_results.append(result)
+            first_pass = FirstPassResult.model_validate(raw_first)
             logger.info(
-                "Second pass complete for '%s': quantifiability=%d/10",
-                result.strategy_name,
-                result.quantifiability_score,
+                "First pass done: %d strategies, type=%s",
+                len(first_pass.strategies_overview),
+                first_pass.content_type,
             )
 
-        return VideoAnalysisResult(
-            video_id=video.id,
-            first_pass=first_pass,
-            second_pass=second_pass_results,
-        )
+            # Step 4: Second pass (reuse the same uploaded file)
+            second_pass_results: list[SecondPassResult] = []
+
+            if not self._skip_second_pass:
+                first_pass_summary = _json.dumps(raw_first, ensure_ascii=False, indent=2)
+
+                for strategy in first_pass.strategies_overview:
+                    logger.info("Second pass for '%s' in %s", strategy.name, video.id)
+                    second_pass_prompt = self._build_second_pass_prompt(
+                        video, strategy, first_pass_summary
+                    )
+
+                    raw_second = await self._gemini.analyze_uploaded_video(
+                        file=gemini_file,
+                        prompt=second_pass_prompt,
+                        response_schema=_SECOND_PASS_SCHEMA,
+                        video_duration_seconds=video.duration,
+                    )
+
+                    result = SecondPassResult.model_validate(raw_second)
+                    second_pass_results.append(result)
+                    logger.info(
+                        "Second pass done: '%s' quantifiability=%d/10",
+                        result.strategy_name,
+                        result.quantifiability_score,
+                    )
+
+            return VideoAnalysisResult(
+                video_id=video.id,
+                first_pass=first_pass,
+                second_pass=second_pass_results,
+            )
+
+        finally:
+            # Cleanup: delete from Gemini File API
+            if gemini_file is not None:
+                await asyncio.to_thread(self._gemini.delete_file, gemini_file)
+            # Cleanup: delete local video file
+            if self._cleanup_after:
+                self._downloader.cleanup(video.id)
 
     # -- Prompt builders -------------------------------------------------------
 
     @staticmethod
     def _build_first_pass_prompt(video: VideoInfo) -> str:
-        """Construct the first-pass prompt with video metadata context."""
         context = (
             f"Video title: {video.title}\n"
             f"Duration: {video.human_duration()}\n"
             f"Channel: {video.channel}\n"
         )
         if video.description:
-            # Include first 500 chars of description for additional context
-            desc_preview = video.description[:500]
-            context += f"Description preview: {desc_preview}\n"
-
+            context += f"Description preview: {video.description[:500]}\n"
         return f"{context}\n{FIRST_PASS_PROMPT}"
 
     @staticmethod
@@ -324,13 +353,6 @@ class VideoAnalyzer:
         strategy_info: StrategyOverview,
         first_pass_summary: str,
     ) -> str:
-        """Construct the second-pass prompt targeting a specific strategy.
-
-        Uses :func:`format_second_pass_prompt` from the prompts module,
-        injecting the first-pass summary, strategy name, and any known
-        timestamp range for the strategy segment.
-        """
-        # Build a strategy description string with available metadata
         strategy_desc = strategy_info.name
         if strategy_info.description:
             strategy_desc += f" - {strategy_info.description}"
@@ -339,13 +361,10 @@ class VideoAnalyzer:
         if strategy_info.markets:
             strategy_desc += f" (markets: {', '.join(strategy_info.markets)})"
 
-        # Use the template formatter from the prompts module
         prompt_text = format_second_pass_prompt(
             first_pass_summary=first_pass_summary,
             target_strategy=strategy_desc,
         )
-
-        # Prepend video context
         context = (
             f"Video title: {video.title}\n"
             f"Duration: {video.human_duration()}\n"
