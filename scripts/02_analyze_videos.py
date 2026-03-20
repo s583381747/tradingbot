@@ -116,11 +116,20 @@ async def main(args: argparse.Namespace) -> None:
             model=settings.gemini.model,
             rate_limiter=rate_limiter,
         )
+        # Auto-detect cookies file
+        cookies_file = None
+        for candidate in [Path("cookies.txt"), Path.home() / "cookies.txt"]:
+            if candidate.exists():
+                cookies_file = candidate
+                console.print(f"[dim]Using cookies: {cookies_file}[/dim]")
+                break
+
         analyzer = VideoAnalyzer(
             gemini_client,
             download_dir="data/videos/downloads",
             skip_second_pass=False,
             cleanup_after=True,
+            cookies_file=cookies_file,
         )
         state_file = output_dir / "processing_state.json"
         processor = BatchProcessor(

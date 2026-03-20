@@ -190,19 +190,25 @@ _SECOND_PASS_SCHEMA: dict = {
 class VideoDownloader:
     """Download YouTube videos to local files using yt-dlp."""
 
-    def __init__(self, download_dir: Path) -> None:
+    def __init__(self, download_dir: Path, cookies_file: Path | str | None = None) -> None:
         self._download_dir = Path(download_dir)
         self._download_dir.mkdir(parents=True, exist_ok=True)
+        self._cookies_file = str(cookies_file) if cookies_file and Path(cookies_file).exists() else None
 
     async def download(self, video: VideoInfo) -> Path:
-        """Download a video and return the local file path."""
-        output_template = str(self._download_dir / f"{video.id}.%(ext)s")
+        """Download a video and return the local file path.
 
-        # Check if already downloaded
+        If the video is already present in the download directory, returns
+        the existing file immediately (supports pre-downloaded videos).
+        """
+        # Check if already downloaded (pre-downloaded or previous run)
         for existing in self._download_dir.glob(f"{video.id}.*"):
             if existing.suffix in ('.mp4', '.webm', '.mkv'):
-                logger.info("Video %s already downloaded: %s", video.id, existing)
+                logger.info("Video %s already present: %s", video.id, existing)
                 return existing
+
+        # Not pre-downloaded — try yt-dlp
+        output_template = str(self._download_dir / f"{video.id}.%(ext)s")
 
         import yt_dlp
 
@@ -212,6 +218,8 @@ class VideoDownloader:
             "quiet": True,
             "no_warnings": True,
         }
+        if self._cookies_file:
+            opts["cookiefile"] = self._cookies_file
 
         logger.info("Downloading video %s: %s", video.id, video.title)
         loop = asyncio.get_running_loop()
@@ -219,10 +227,9 @@ class VideoDownloader:
 
         # Find the downloaded file
         for f in self._download_dir.glob(f"{video.id}.*"):
-            if f.suffix in ('.mp4', '.webm', '.mkv', '.mp4.part'):
-                if not f.suffix.endswith('.part'):
-                    logger.info("Downloaded: %s (%.1f MB)", f.name, f.stat().st_size / 1e6)
-                    return f
+            if f.suffix in ('.mp4', '.webm', '.mkv'):
+                logger.info("Downloaded: %s (%.1f MB)", f.name, f.stat().st_size / 1e6)
+                return f
 
         raise RuntimeError(f"Download completed but file not found for {video.id}")
 
@@ -255,9 +262,10 @@ class VideoAnalyzer:
         download_dir: Path | str = "data/videos/downloads",
         skip_second_pass: bool = False,
         cleanup_after: bool = True,
+        cookies_file: Path | str | None = None,
     ) -> None:
         self._gemini = gemini_client
-        self._downloader = VideoDownloader(Path(download_dir))
+        self._downloader = VideoDownloader(Path(download_dir), cookies_file=cookies_file)
         self._skip_second_pass = skip_second_pass
         self._cleanup_after = cleanup_after
 
