@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Bash(pip install:*)",
+      "Bash(pkill -f \"02_analyze_videos\")",
+      "Bash(ls -la /Users/mac/project/tradingbot/data/analyses/*.json)",
+      "Bash(tee /tmp/tradingbot_analysis.log)"
+    ]
+  }
+}

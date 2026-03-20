@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Environment
+.env
+.venv/
+venv/
+
+# Data (large files)
+data/analyses/
+data/videos/
+data/knowledge/
+data/backtest_results/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Journal
+.dev/journal/
+
+# OS
+.DS_Store
