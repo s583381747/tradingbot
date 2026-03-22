@@ -187,12 +187,10 @@ class StrategyCodeGenerator:
                 indicator_lines.append(
                     f"        {var_name} = {bt_cls}(self.data.close{params_kwargs})"
                 )
-                # Add period-like params to the params tuple
                 for pname, pval in ind.parameters.items():
                     safe = _sanitize_var(f"{ind.name}_{pname}")
                     param_lines.append(f'        ("{safe}", {pval!r}),')
             else:
-                # Unknown indicator — leave a comment
                 indicator_lines.append(
                     f"        # TODO: unknown indicator '{ind.name}' — implement manually"
                 )
@@ -200,103 +198,96 @@ class StrategyCodeGenerator:
                     f"        {var_name} = None  # placeholder"
                 )
 
-        # Build entry logic
+        # Build entry/exit logic
         entry_logic = _build_condition_logic(strategy.entry_conditions, "entry")
-
-        # Build exit logic
         exit_logic = _build_condition_logic(strategy.exit_conditions, "exit")
 
-        # Build stop-loss / take-profit logic
-        sl_tp_lines = ""
+        # Build stop-loss / take-profit params
+        sl_tp_next: list[str] = []
         if strategy.risk_management:
             rm = strategy.risk_management
             if rm.stop_loss_pct:
                 param_lines.append(f'        ("stop_loss_pct", {rm.stop_loss_pct}),')
-                sl_tp_lines += textwrap.dedent("""\
-                    # Stop-loss check
-                    if self.position:
-                        current_pnl_pct = (self.data.close[0] - self.buy_price) / self.buy_price * 100 if self.buy_price else 0
-                        if current_pnl_pct <= -self.p.stop_loss_pct:
-                            self.log(f"STOP LOSS triggered at {current_pnl_pct:.2f}%")
-                            self.order = self.sell()
-                            return
-                """)
+                sl_tp_next.extend([
+                    "        # Stop-loss check",
+                    "        if self.position:",
+                    "            current_pnl_pct = (self.data.close[0] - self.buy_price) / self.buy_price * 100 if self.buy_price else 0",
+                    "            if current_pnl_pct <= -self.p.stop_loss_pct:",
+                    '                self.log(f"STOP LOSS triggered at {current_pnl_pct:.2f}%")',
+                    "                self.order = self.sell()",
+                    "                return",
+                    "",
+                ])
             if rm.take_profit_pct:
                 param_lines.append(f'        ("take_profit_pct", {rm.take_profit_pct}),')
-                sl_tp_lines += textwrap.dedent("""\
-                    # Take-profit check
-                    if self.position:
-                        current_pnl_pct = (self.data.close[0] - self.buy_price) / self.buy_price * 100 if self.buy_price else 0
-                        if current_pnl_pct >= self.p.take_profit_pct:
-                            self.log(f"TAKE PROFIT triggered at {current_pnl_pct:.2f}%")
-                            self.order = self.sell()
-                            return
-                """)
+                sl_tp_next.extend([
+                    "        # Take-profit check",
+                    "        if self.position:",
+                    "            current_pnl_pct = (self.data.close[0] - self.buy_price) / self.buy_price * 100 if self.buy_price else 0",
+                    "            if current_pnl_pct >= self.p.take_profit_pct:",
+                    '                self.log(f"TAKE PROFIT triggered at {current_pnl_pct:.2f}%")',
+                    "                self.order = self.sell()",
+                    "                return",
+                    "",
+                ])
 
-        # Indent helpers
-        ind_block = "\n".join(indicator_lines) if indicator_lines else "        pass  # no indicators"
-        params_block = "\n".join(param_lines)
-
-        # Build next() body
-        next_body_parts: list[str] = []
-        next_body_parts.append("        # Skip if an order is pending")
-        next_body_parts.append("        if self.has_pending_order():")
-        next_body_parts.append("            return")
-        next_body_parts.append("")
-
-        if sl_tp_lines:
-            for line in sl_tp_lines.splitlines():
-                next_body_parts.append(f"        {line}" if line.strip() else "")
-
-        next_body_parts.append("")
-        next_body_parts.append("        # Entry logic")
-        next_body_parts.append("        if not self.position:")
+        # Assemble the code line by line (no textwrap.dedent issues)
+        lines: list[str] = []
+        desc_escaped = (strategy.description or "").replace('"""', "'''")
+        name_escaped = strategy.name.replace('"""', "'''")
+        lines.append(f'"""Auto-generated backtrader strategy: {name_escaped}."""')
+        lines.append("")
+        lines.append("from __future__ import annotations")
+        lines.append("")
+        lines.append("import backtrader as bt")
+        lines.append("")
+        lines.append("from src.strategy.templates.backtrader_base import BaseGeneratedStrategy")
+        lines.append("")
+        lines.append("")
+        lines.append(f"class {class_name}(BaseGeneratedStrategy):")
+        lines.append(f'    """Generated strategy: {name_escaped}.')
+        lines.append("")
+        lines.append(f"    {desc_escaped}")
+        lines.append('    """')
+        lines.append("")
+        lines.append("    params = (")
+        lines.extend(param_lines)
+        lines.append("    )")
+        lines.append("")
+        lines.append("    def __init__(self) -> None:")
+        lines.append("        super().__init__()")
+        if indicator_lines:
+            lines.extend(indicator_lines)
+        else:
+            lines.append("        pass  # no indicators")
+        lines.append("")
+        lines.append("    def next(self) -> None:")
+        lines.append("        # Skip if an order is pending")
+        lines.append("        if self.has_pending_order():")
+        lines.append("            return")
+        lines.append("")
+        if sl_tp_next:
+            lines.extend(sl_tp_next)
+        lines.append("        # Entry logic")
+        lines.append("        if not self.position:")
         if entry_logic:
-            next_body_parts.append(f"            if {entry_logic}:")
+            lines.append(f"            if {entry_logic}:")
         else:
-            next_body_parts.append("            if True:  # TODO: define entry conditions")
-        next_body_parts.append("                self.log('BUY CREATE %.2f' % self.data.close[0])")
-        next_body_parts.append("                self.order = self.buy()")
-        next_body_parts.append("")
-        next_body_parts.append("        # Exit logic")
-        next_body_parts.append("        else:")
+            lines.append("            if True:  # TODO: define entry conditions")
+        lines.append("                self.log('BUY CREATE %.2f' % self.data.close[0])")
+        lines.append("                self.order = self.buy()")
+        lines.append("")
+        lines.append("        # Exit logic")
+        lines.append("        else:")
         if exit_logic:
-            next_body_parts.append(f"            if {exit_logic}:")
+            lines.append(f"            if {exit_logic}:")
         else:
-            next_body_parts.append("            if True:  # TODO: define exit conditions")
-        next_body_parts.append("                self.log('SELL CREATE %.2f' % self.data.close[0])")
-        next_body_parts.append("                self.order = self.sell()")
+            lines.append("            if True:  # TODO: define exit conditions")
+        lines.append("                self.log('SELL CREATE %.2f' % self.data.close[0])")
+        lines.append("                self.order = self.sell()")
+        lines.append("")
 
-        next_block = "\n".join(next_body_parts)
-
-        code = textwrap.dedent(f"""\
-            \"\"\"Auto-generated backtrader strategy: {strategy.name}.\"\"\"
-
-            from __future__ import annotations
-
-            import backtrader as bt
-
-            from src.strategy.templates.backtrader_base import BaseGeneratedStrategy
-
-
-            class {class_name}(BaseGeneratedStrategy):
-                \"\"\"Generated strategy: {strategy.name}.
-
-                {strategy.description}
-                \"\"\"
-
-                params = (
-            {params_block}
-                )
-
-                def __init__(self) -> None:
-                    super().__init__()
-            {ind_block}
-
-                def next(self) -> None:
-            {next_block}
-        """)
-        return code
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Validation

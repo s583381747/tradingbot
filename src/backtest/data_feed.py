@@ -204,6 +204,10 @@ class DataFeedProvider:
         keep_cols = [c for c in df.columns if c.lower() in ("open", "high", "low", "close", "volume")]
         df = df[keep_cols]
 
+        # Strip timezone info to avoid mixed-timezone errors
+        if hasattr(df.index, "tz") and df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+
         self._save_cache(df, cache)
         logger.info("Downloaded %d bars for %s", len(df), symbol)
         return df

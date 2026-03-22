@@ -107,29 +107,50 @@ class KnowledgeExtractor:
             first_pass = analysis.get("first_pass") or {}
             second_pass = analysis.get("second_pass") or {}
 
-            # The analysis may contain a top-level "strategies" list, or the
-            # strategy information may be spread across the two passes.
-            raw_strategies = (
-                second_pass.get("strategies")
-                or first_pass.get("strategies")
-                or analysis.get("strategies")
-                or []
-            )
+            # second_pass can be a list of strategy dicts (from VideoAnalysisResult)
+            # or a dict with a "strategies" key.
+            if isinstance(second_pass, list):
+                # Each item is a strategy dict from the two-pass analysis
+                for item in second_pass:
+                    if isinstance(item, dict):
+                        strategy = self._build_strategy(item, video_id)
+                        if strategy is not None:
+                            strategies.append(strategy)
+            else:
+                # The analysis may contain a top-level "strategies" list, or the
+                # strategy information may be spread across the two passes.
+                raw_strategies = (
+                    second_pass.get("strategies")
+                    or first_pass.get("strategies")
+                    or analysis.get("strategies")
+                    or []
+                )
 
-            if isinstance(raw_strategies, list) and raw_strategies:
-                for raw in raw_strategies:
-                    if not isinstance(raw, dict):
-                        continue
-                    strategy = self._build_strategy(raw, video_id)
-                    if strategy is not None:
-                        strategies.append(strategy)
+                if isinstance(raw_strategies, list) and raw_strategies:
+                    for raw in raw_strategies:
+                        if not isinstance(raw, dict):
+                            continue
+                        strategy = self._build_strategy(raw, video_id)
+                        if strategy is not None:
+                            strategies.append(strategy)
 
-            # If no explicit strategy list, try to build one from the
+            # Also extract from first_pass strategies_overview if available
+            if not strategies and isinstance(first_pass, dict):
+                overviews = first_pass.get("strategies_overview") or []
+                for ov in overviews:
+                    if isinstance(ov, dict):
+                        strategy = self._build_strategy(ov, video_id)
+                        if strategy is not None:
+                            strategies.append(strategy)
+
+            # If still no strategies, try to build one from the
             # combined first+second pass data.
             if not strategies:
-                merged = {**first_pass, **second_pass}
-                if merged:
-                    strategy = self._build_strategy(merged, video_id)
+                merged_data = first_pass if isinstance(first_pass, dict) else {}
+                if isinstance(second_pass, dict):
+                    merged_data = {**merged_data, **second_pass}
+                if merged_data:
+                    strategy = self._build_strategy(merged_data, video_id)
                     if strategy is not None:
                         strategies.append(strategy)
 

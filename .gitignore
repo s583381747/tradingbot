@@ -12,11 +12,12 @@ build/
 .venv/
 venv/
 
-# Data (large files)
+# Data (large dirs)
 data/analyses/
 data/videos/
 data/knowledge/
 data/backtest_results/
+data/backtest_cache/
 
 # IDE
 .idea/

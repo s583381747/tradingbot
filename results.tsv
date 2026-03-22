@@ -1,0 +1,14 @@
+commit	score	total_return	sharpe	max_drawdown	win_rate	profit_factor	total_trades	status	description
+baseline	-10.000000	-0.2176	-1.5089	0.2176	0.00	0.0000	2	baseline	Original strategy — too strict, only 2 trades
+exp01	0.081587	-22.0488	-1.6026	22.0488	12.17	0.0698	493	kept	Loosen slope/vwap/pullback/volume filters
+exp02	0.158925	-15.1071	-1.1833	15.1071	13.97	0.0901	315	kept	ATR stop 2.0, slope 0.008, pullback 1.2
+exp05	0.194880	-11.9658	-1.0594	11.9658	15.66	0.1159	249	kept	Simplified entry logic — bounce off EMA, no breakout
+exp07	0.277120	-4.8645	-0.7164	4.9041	18.28	0.1572	93	kept	EMA50 trend filter + min 2 bars in pullback zone
+exp10	0.291824	-4.5361	-0.6618	4.6262	22.58	0.2148	93	kept	TP_ATR_MULT 3.0
+exp13	0.296789	-4.3927	-0.5663	4.5627	16.13	0.2743	93	kept	Disable partial TP — let winners run
+exp15	0.326395	-3.6202	-0.4854	3.7814	25.56	0.3848	90	kept	Trail ATR mult 2.0
+exp18	0.389154	-1.7100	-0.2409	2.3955	35.37	0.6955	82	kept	Trail ATR mult 5.0
+exp23	0.403630	-0.9592	-0.2471	1.6860	40.00	0.7498	60	kept	RSI filter 65/35
+exp27	0.407040	-0.7557	-0.2520	1.1554	39.22	0.7648	51	kept	Momentum confirmation (close breaks prior high/low)
+exp33	0.413109	-0.5380	-0.2481	1.0429	39.22	0.8206	51	kept	Time-based exit: close losing trades after 45 bars
+exp42	0.413254	-0.5338	-0.2479	1.0387	39.22	0.8218	51	kept	Simplify trend detect: slope + EMA50 only (no price filter)

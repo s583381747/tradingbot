@@ -86,7 +86,7 @@ class ChannelScraper:
         """Serialise *channel_info* to a JSON file at *output_path*."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
         data = channel_info.model_dump(mode="json")
-        output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+        output_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         logger.info("Saved channel info to %s", output_path)
 
     # ------------------------------------------------------------------
