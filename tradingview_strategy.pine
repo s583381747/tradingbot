@@ -1,604 +1,370 @@
 // ============================================================================
-// Chop-Box Trend Following v2
-// 核心: 识别 Chop Box → 突破后入场 → EMA20 回撤弹跳 → 30/40/30 阶梯止盈
+// EMA20 Trend Following — Plan F (Production)
 //
-// 逻辑链:
-// 1. Chop Box 检测 (EMA 斜率持续性) → 盘整区间内不做
-// 2. 趋势确认 (EMA 斜率 + 双均线排列)
-// 3. 入场: 价格回撤至 EMA20 附近 → 弹跳确认 → 入场
-// 4. 止盈: 30% 蜡烛跟踪 / 40% EMA-中ATR / 30% EMA-宽ATR
-// 5. 加仓: 再次测试 EMA20 支撑 → 保本仓位加仓
+// Logic (matches strategy_final.py exactly):
+//   TREND:  close > EMA20 > EMA50 (bull) or close < EMA20 < EMA50 (bear)
+//   TOUCH:  wick within 0.15*ATR of EMA20
+//   BOUNCE: next bar close > touch bar high
+//   ENTRY:  signal line = touch_high + offset (stop order, 3 bars valid)
+//   STOP:   touch_low - 0.3*ATR
+//   LOCK:   20% at 0.3R → move stop to breakeven
+//   RUNNER: 80% Chandelier trail: highest_high(40) - 1.0*ATR
+//   DAILY:  2.5R loss limit per day
+//
+// Validated: PF=2.55, +33%, 4431 trades, WR=77%, MaxDD=0.33%
 // ============================================================================
-//@version=5
-strategy("Chop-Box 趋势跟随 v2",
+//@version=6
+strategy("EMA20 Plan F",
      overlay=true,
      initial_capital=100000,
      default_qty_type=strategy.fixed,
      default_qty_value=1,
-     commission_type=strategy.commission.percent,
-     commission_value=0.01,
-     slippage=1,
+     commission_type=strategy.commission.cash_per_contract,
+     commission_value=0.005,
+     slippage=0,
      process_orders_on_close=false,
      calc_on_every_tick=false,
      max_bars_back=500,
-     pyramiding=3)
+     pyramiding=0)
 
 // ============================================================================
-// 一、参数设置
+// PARAMETERS
 // ============================================================================
 
-// --- 核心指标 ---
-emaLen         = input.int(20,     "EMA 快线周期",       minval=5,    maxval=100,  group="核心指标")
-emaSlowLen     = input.int(50,     "EMA 慢线周期",       minval=20,   maxval=200,  group="核心指标")
-atrLen         = input.int(14,     "ATR 周期",           minval=5,    maxval=30,   group="核心指标")
-slopePeriod    = input.int(5,      "斜率计算周期",       minval=2,    maxval=20,   group="核心指标")
+// --- Core Indicators ---
+emaFastLen    = input.int(20,      "EMA Fast",            minval=5,   maxval=100,  group="Indicators")
+emaSlowLen    = input.int(50,      "EMA Slow",            minval=20,  maxval=200,  group="Indicators")
+atrLen        = input.int(14,      "ATR Period",          minval=5,   maxval=30,   group="Indicators")
 
-// --- Chop Box 检测 ---
-chopAvgPeriod  = input.int(20,     "斜率平均周期",       minval=5,    maxval=50,   group="Chop Box")
-chopThreshold  = input.float(0.005,"斜率阈值(%/bar)",    minval=0.001,maxval=0.05, step=0.001, group="Chop Box")
-chopMinBars    = input.int(5,      "最小盘整K线数",      minval=2,    maxval=30,   group="Chop Box")
+// --- Touch Detection ---
+touchTol      = input.float(0.15,  "Touch Tolerance (xATR)", minval=0.05, maxval=1.0, step=0.05, group="Entry")
+touchBelow    = input.float(0.5,   "Touch Below Max (xATR)", minval=0.1,  maxval=2.0, step=0.1,  group="Entry")
+signalOffset  = input.float(0.05,  "Signal Offset ($)",      minval=0.01, maxval=0.50, step=0.01, group="Entry")
+stopBuffer    = input.float(0.3,   "Stop Buffer (xATR)",     minval=0.1,  maxval=2.0,  step=0.1,  group="Entry")
+signalBars    = input.int(3,       "Signal Valid Bars",       minval=1,    maxval=10,   group="Entry")
 
-// --- 回撤入场 ---
-pbTouchMult    = input.float(1.2,  "回撤区间(xATR)",     minval=0.3,  maxval=3.0,  step=0.1, group="入场")
-pbMinBars      = input.int(1,      "最小回撤K线",        minval=1,    maxval=10,   group="入场")
+// --- Exit: Lock + Chandelier ---
+lockRR        = input.float(0.3,   "Lock R:R",            minval=0.1,  maxval=2.0,  step=0.1,  group="Exit")
+lockPct       = input.float(20,    "Lock Position %",     minval=5,    maxval=50,   step=5,    group="Exit")
+chandBars     = input.int(40,      "Chandelier Lookback", minval=10,   maxval=100,  group="Exit")
+chandMult     = input.float(1.0,   "Chandelier ATR Mult", minval=0.5,  maxval=3.0,  step=0.1,  group="Exit")
 
-// --- 初始止损 ---
-initStopMult   = input.float(1.5,  "初始止损(xATR)",     minval=0.5,  maxval=5.0,  step=0.1, group="止损")
+// --- Risk ---
+riskPct       = input.float(1.0,   "Risk Per Trade %",    minval=0.1,  maxval=5.0,  step=0.1,  group="Risk")
+maxPosPct     = input.float(25,    "Max Position %",      minval=5,    maxval=50,   step=5,    group="Risk")
+dailyRLimit   = input.float(2.5,   "Daily R Limit",       minval=1.0,  maxval=10.0, step=0.5,  group="Risk")
+maxHoldBars   = input.int(180,     "Max Hold Bars",       minval=30,   maxval=500,  group="Risk")
 
-// --- 三阶梯止盈 (30/40/30) ---
-tpActivateAtr  = input.float(2.0,  "TP激活阈值(xATR)",   minval=0.5,  maxval=5.0,  step=0.1, group="止盈")
-tp1Pct         = input.float(30,   "TP1仓位%",           minval=10,   maxval=50,   step=5,   group="止盈")
-tp2Pct         = input.float(40,   "TP2仓位%",           minval=10,   maxval=50,   step=5,   group="止盈")
-tp1Offset      = input.float(0.10, "TP1蜡烛偏移($)",     minval=0.01, maxval=1.0,  step=0.01,group="止盈")
-tp2AtrMult     = input.float(3.0,  "TP2 EMA偏移(xATR)",  minval=1.0,  maxval=8.0,  step=0.5, group="止盈")
-tp3AtrMult     = input.float(6.0,  "TP3 EMA偏移(xATR)",  minval=2.0,  maxval=12.0, step=0.5, group="止盈")
+// --- Session ---
+noEntryHour   = input.int(15,      "No Entry After (H)",  minval=0, maxval=23, group="Session")
+noEntryMin    = input.int(30,      "No Entry After (M)",  minval=0, maxval=59, group="Session")
+closeHour     = input.int(15,      "Force Close (H)",     minval=0, maxval=23, group="Session")
+closeMin      = input.int(58,      "Force Close (M)",     minval=0, maxval=59, group="Session")
 
-// --- 加仓 ---
-enableAddon    = input.bool(true,  "启用加仓",           group="加仓")
-maxAddons      = input.int(2,      "最大加仓次数",       minval=1,    maxval=5,    group="加仓")
-addonPbMult    = input.float(1.2,  "加仓回撤区间(xATR)", minval=0.5,  maxval=3.0,  step=0.1, group="加仓")
-addonMinBars   = input.int(2,      "加仓最小K线",        minval=1,    maxval=10,   group="加仓")
-
-// --- 风险管理 ---
-riskPct        = input.float(1.0,  "单笔风险%",          minval=0.1,  maxval=5.0,  step=0.1, group="风险管理")
-maxPosPct      = input.float(25,   "最大仓位%",          minval=5,    maxval=50,   step=5,   group="风险管理")
-maxDailyTrades = input.int(6,      "每日最大交易",       minval=1,    maxval=20,   group="风险管理")
-maxDailyLossPct= input.float(2.0,  "每日最大亏损%",      minval=0.5,  maxval=10.0, step=0.5, group="风险管理")
-losersMaxBars  = input.int(60,     "亏损最大持仓K线",    minval=10,   maxval=200,  group="风险管理")
-
-// --- 时间过滤 ---
-noEntryHour    = input.int(15,     "停止入场(时)",       minval=0,    maxval=23,   group="时间")
-noEntryMin     = input.int(30,     "停止入场(分)",       minval=0,    maxval=59,   group="时间")
-closeHour      = input.int(15,     "强制平仓(时)",       minval=0,    maxval=23,   group="时间")
-closeMinute    = input.int(58,     "强制平仓(分)",       minval=0,    maxval=59,   group="时间")
-
-// --- 交易方向 ---
-tradeDir       = input.string("双向", "交易方向", options=["双向", "仅做多", "仅做空"], group="交易方向")
+// --- Direction ---
+tradeDir      = input.string("Both", "Direction", options=["Both", "Long Only", "Short Only"], group="Direction")
 
 // ============================================================================
-// 二、指标计算
+// INDICATORS
 // ============================================================================
 
-ema20  = ta.ema(close, emaLen)
+ema20  = ta.ema(close, emaFastLen)
 ema50  = ta.ema(close, emaSlowLen)
 atrVal = ta.atr(atrLen)
 
-// EMA 斜率: 标准化为 %/bar
-emaPrev     = ta.valuewhen(true, ema20[slopePeriod], 0)
-rawSlope    = nz((ema20 - ema20[slopePeriod]) / slopePeriod)
-emaSlope    = close > 0 ? rawSlope / close * 100 : 0.0
-
-// 平均绝对斜率 (用于 chop 检测)
-avgAbsSlope = ta.sma(math.abs(emaSlope), chopAvgPeriod)
-
 // ============================================================================
-// 三、时间管理
+// SESSION
 // ============================================================================
 
-currentTime    = hour * 60 + minute
+currentMins    = hour * 60 + minute
 noEntryTime    = noEntryHour * 60 + noEntryMin
-forceCloseTime = closeHour * 60 + closeMinute
-pastEntryCutoff = currentTime >= noEntryTime
-pastForceClose  = currentTime >= forceCloseTime
-
-isNewDay = ta.change(time("D")) != 0
+forceCloseTime = closeHour * 60 + closeMin
+pastEntry      = currentMins >= noEntryTime
+pastClose      = currentMins >= forceCloseTime
+isNewDay       = ta.change(time("D")) != 0
 
 // ============================================================================
-// 四、每日状态追踪
+// DAILY R TRACKING
 // ============================================================================
 
-var int   dailyTradeCount = 0
-var float dailyStartValue = 0.0
+var float dailyRLoss  = 0.0
+var float dailyStart  = 0.0
 
 if isNewDay
-    dailyTradeCount := 0
-    dailyStartValue := strategy.equity
+    dailyRLoss := 0.0
+    dailyStart := strategy.equity
 
-dailyLoss = dailyStartValue > 0 ? (dailyStartValue - strategy.equity) / dailyStartValue : 0.0
-dailyLimitHit = dailyTradeCount >= maxDailyTrades or dailyLoss >= maxDailyLossPct / 100
-
-// ============================================================================
-// 五、Chop Box 检测 (核心过滤器)
-// ============================================================================
-
-var bool  inChop       = true
-var float boxHigh      = 0.0
-var float boxLow       = 999999.0
-var int   chopBarCount = 0
-
-// 新交易日重置 chop box
-if isNewDay
-    inChop       := true
-    boxHigh      := high
-    boxLow       := low
-    chopBarCount := 1
-
-// Chop Box 状态机
-if not isNewDay and not na(avgAbsSlope) and bar_index > chopAvgPeriod
-    if inChop
-        // 检查突破: 斜率回升 + 价格突破 box
-        if avgAbsSlope >= chopThreshold and chopBarCount >= chopMinBars
-            if close > boxHigh or close < boxLow
-                inChop := false
-        // 仍在盘整: 扩展 box
-        if inChop and avgAbsSlope < chopThreshold
-            boxHigh      := math.max(boxHigh, high)
-            boxLow       := math.min(boxLow, low)
-            chopBarCount := chopBarCount + 1
-    else
-        // 趋势中: 斜率变平 → 新的 chop box
-        if avgAbsSlope < chopThreshold
-            inChop       := true
-            boxHigh      := high
-            boxLow       := low
-            chopBarCount := 1
+dailyLimitHit = dailyRLoss >= dailyRLimit
 
 // ============================================================================
-// 六、趋势检测
+// STATE MACHINE
 // ============================================================================
 
-// 趋势 = 斜率足够 + 均线排列一致
+// Touch/Bounce/Signal detection state
+var int   touchBar     = -1     // bar_index of touch
+var float touchHigh    = 0.0
+var float touchLow     = 0.0
+var float touchATR     = 0.0
+var int   touchDir     = 0      // 1=long touch, -1=short touch
+
+var int   bounceBar    = -1     // bar_index of bounce confirmation
+var float signalPrice  = 0.0    // entry price (stop order)
+var float stopPrice    = 0.0    // initial stop
+var float tradeRisk    = 0.0    // |signal - stop|
+var int   signalDir    = 0      // direction of pending signal
+var int   signalExpiry = -1     // bar_index when signal expires
+
+// Position management state
+var int   posDir       = 0
+var float entryPrice   = 0.0
+var float runnerStop   = 0.0
+var float posRisk      = 0.0
+var int   posShares    = 0
+var int   lockShares   = 0
+var bool  lockDone     = false
+var int   entryBarIdx  = 0
+
+// ============================================================================
+// TREND DETECTION
+// ============================================================================
+
 trendDir = 0
-if not na(emaSlope) and math.abs(emaSlope) >= chopThreshold
-    if emaSlope > 0 and ema20 > ema50
-        trendDir := 1
-    else if emaSlope < 0 and ema20 < ema50
-        trendDir := -1
+if close > ema20 and ema20 > ema50
+    trendDir := 1
+else if close < ema20 and ema20 < ema50
+    trendDir := -1
 
 // ============================================================================
-// 七、回撤状态机
+// TOUCH → BOUNCE → SIGNAL CHAIN
 // ============================================================================
 
-var int   pbState    = 0      // 0=等待, 1=在回撤区间内
-var int   pbDir      = 0      // 跟踪的趋势方向
-var int   pbBarCount = 0      // 在区间内的K线数
-var float pbExtreme  = 0.0    // 回撤期间的极值 (做多=最低点, 做空=最高点)
+// Only scan when flat and allowed to trade
+canScan = strategy.position_size == 0 and not pastEntry and not dailyLimitHit and not na(atrVal) and atrVal > 0
 
-// 新交易日重置回撤状态
-if isNewDay
-    pbState    := 0
-    pbDir      := 0
-    pbBarCount := 0
-    pbExtreme  := 0.0
+if canScan
+    // Step 1: Check for TOUCH on this bar
+    if trendDir != 0
+        tol = atrVal * touchTol
+        isTouchLong  = trendDir == 1 and low <= ema20 + tol and low >= ema20 - atrVal * touchBelow
+        isTouchShort = trendDir == -1 and high >= ema20 - tol and high <= ema20 + atrVal * touchBelow
 
-// ============================================================================
-// 八、持仓状态变量
-// ============================================================================
+        if isTouchLong or isTouchShort
+            touchBar  := bar_index
+            touchHigh := high
+            touchLow  := low
+            touchATR  := atrVal
+            touchDir  := trendDir
 
-var int   posDirection   = 0       // 1=多, -1=空, 0=无
-var float avgEntryPrice  = 0.0     // 加权平均入场价
-var int   totalSize      = 0       // 总仓位
-var int   addonCount     = 0       // 已加仓次数
-var int   addonPbBars    = 0       // 加仓回撤计数
-var int   entryBarIndex  = 0       // 入场 bar 索引
+    // Step 2: Check for BOUNCE (bar after touch)
+    if touchBar >= 0 and bar_index == touchBar + 1
+        bouncedLong  = touchDir == 1 and close > touchHigh
+        bouncedShort = touchDir == -1 and close < touchLow
 
-// 三阶梯 TP 状态
-var bool  tpActive       = false   // TP 是否激活
-var bool  tp1Done        = false   // TP1 已出场
-var bool  tp2Done        = false   // TP2 已出场
-var int   tp1Qty         = 0       // TP1 数量
-var int   tp2Qty         = 0       // TP2 数量
-var int   tp3Qty         = 0       // TP3 数量
-var float tp1Stop        = 0.0     // TP1 跟踪止损
-var float tp2Stop        = 0.0     // TP2 跟踪止损
-var float tp3Stop        = 0.0     // TP3 跟踪止损
-var float initialStop    = 0.0     // 初始止损
+        if bouncedLong or bouncedShort
+            bounceBar := bar_index
 
-// ============================================================================
-// 九、仓位计算函数
-// ============================================================================
-
-calcSize(float entryP, float stopP) =>
-    risk = math.abs(entryP - stopP)
-    sizeByRisk    = risk > 0 ? math.floor(strategy.equity * riskPct / 100 / risk) : 0
-    sizeByCapital = entryP > 0 ? math.floor(strategy.equity * maxPosPct / 100 / entryP) : 0
-    math.max(1, math.min(sizeByRisk, sizeByCapital))
-
-// ============================================================================
-// 十、重置持仓状态
-// ============================================================================
-
-resetPosition() =>
-    posDirection   := 0
-    avgEntryPrice  := 0.0
-    totalSize      := 0
-    addonCount     := 0
-    addonPbBars    := 0
-    entryBarIndex  := 0
-    tpActive       := false
-    tp1Done        := false
-    tp2Done        := false
-    tp1Qty         := 0
-    tp2Qty         := 0
-    tp3Qty         := 0
-    tp1Stop        := 0.0
-    tp2Stop        := 0.0
-    tp3Stop        := 0.0
-    initialStop    := 0.0
-    pbState        := 0
-
-// ============================================================================
-// 十一、入场逻辑
-// ============================================================================
-
-// 入场条件门控
-canEnter = not inChop and not pastEntryCutoff and not dailyLimitHit
-           and trendDir != 0 and strategy.position_size == 0
-
-// 趋势翻转时重置回撤
-if trendDir != pbDir and trendDir != 0
-    pbDir      := trendDir
-    pbState    := 0
-    pbBarCount := 0
-    pbExtreme  := 0.0
-
-// 更新回撤状态机 (仅在无持仓且允许入场时)
-if canEnter and not na(atrVal) and atrVal > 0
-    dist   = math.abs(close - ema20)
-    inZone = dist <= atrVal * pbTouchMult
-
-    if pbState == 0
-        if inZone
-            pbState    := 1
-            pbBarCount := 1
-            pbExtreme  := trendDir == 1 ? low : high
-    else if pbState == 1
-        if inZone
-            pbBarCount := pbBarCount + 1
-            if trendDir == 1
-                pbExtreme := math.min(pbExtreme, low)
+            if touchDir == 1
+                signalPrice := touchHigh + signalOffset
+                stopPrice   := touchLow - stopBuffer * touchATR
             else
-                pbExtreme := math.max(pbExtreme, high)
+                signalPrice := touchLow - signalOffset
+                stopPrice   := touchHigh + stopBuffer * touchATR
+
+            tradeRisk    := math.abs(signalPrice - stopPrice)
+            signalDir    := touchDir
+            signalExpiry := bar_index + signalBars
         else
-            // 离开区间 → 检查弹跳确认
-            onSide   = (trendDir == 1 and close > ema20) or (trendDir == -1 and close < ema20)
-            momentum = (trendDir == 1 and close > high[1]) or (trendDir == -1 and close < low[1])
+            touchBar := -1  // bounce failed, reset
 
-            if onSide and pbBarCount >= pbMinBars and momentum
-                // ═══ 执行入场 ═══
-                entryP = close
-                atr_   = atrVal > 0 ? atrVal : 0.01
+    // Step 3: Check SIGNAL TRIGGER (bars after bounce)
+    if signalDir != 0 and bar_index > bounceBar and bar_index <= signalExpiry
+        triggered = false
 
-                // 止损: 回撤极值 ± ATR
-                stopP = trendDir == 1 ? pbExtreme - initStopMult * atr_ : pbExtreme + initStopMult * atr_
+        if signalDir == 1 and high >= signalPrice
+            triggered := true
+        else if signalDir == -1 and low <= signalPrice
+            triggered := true
 
-                qty = calcSize(entryP, stopP)
+        if triggered and tradeRisk > 0
+            // Direction filter
+            dirOk = (tradeDir == "Both") or (tradeDir == "Long Only" and signalDir == 1) or (tradeDir == "Short Only" and signalDir == -1)
 
-                // 允许交易方向检查
-                dirOk = (tradeDir == "双向") or (tradeDir == "仅做多" and trendDir == 1) or (tradeDir == "仅做空" and trendDir == -1)
+            if dirOk
+                // Position sizing
+                qty = math.max(1, math.floor(strategy.equity * riskPct / 100 / tradeRisk))
+                maxQty = math.max(1, math.floor(strategy.equity * maxPosPct / 100 / signalPrice))
+                qty := math.min(qty, maxQty)
 
-                if qty > 0 and dirOk
-                    posDirection  := trendDir
-                    avgEntryPrice := entryP
-                    totalSize     := qty
-                    addonCount    := 0
-                    addonPbBars   := 0
-                    entryBarIndex := bar_index
-                    initialStop   := stopP
-                    tpActive      := false
-                    tp1Done       := false
-                    tp2Done       := false
+                // Execute entry
+                posDir      := signalDir
+                entryPrice  := signalPrice
+                runnerStop  := stopPrice
+                posRisk     := tradeRisk
+                posShares   := qty
+                lockShares  := math.max(1, math.floor(qty * lockPct / 100))
+                lockDone    := false
+                entryBarIdx := bar_index
 
-                    // 分配 TP 仓位 (30/40/30)
-                    if qty >= 3
-                        tp1Qty := math.max(1, math.floor(qty * tp1Pct / 100))
-                        tp2Qty := math.max(1, math.floor(qty * tp2Pct / 100))
-                        tp3Qty := qty - tp1Qty - tp2Qty
-                        if tp3Qty <= 0
-                            tp3Qty := 1
-                            tp2Qty := qty - tp1Qty - 1
-                    else
-                        // 仓位太小: 全部放宽止盈
-                        tp1Qty  := 0
-                        tp2Qty  := 0
-                        tp3Qty  := qty
-                        tp1Done := true
-                        tp2Done := true
+                if signalDir == 1
+                    strategy.entry("Long", strategy.long, qty=qty, stop=signalPrice)
+                else
+                    strategy.entry("Short", strategy.short, qty=qty, stop=signalPrice)
 
-                    tp1Stop := stopP
-                    tp2Stop := stopP
-                    tp3Stop := stopP
+            // Reset signal regardless
+            signalDir := 0
+            touchBar  := -1
 
-                    dailyTradeCount := dailyTradeCount + 1
-
-                    if trendDir == 1
-                        strategy.entry("Long", strategy.long, qty=qty)
-                    else
-                        strategy.entry("Short", strategy.short, qty=qty)
-
-            // 重置回撤状态
-            pbState    := 0
-            pbBarCount := 0
-            pbExtreme  := 0.0
+    // Expire signal
+    if signalDir != 0 and bar_index > signalExpiry
+        signalDir := 0
+        touchBar  := -1
 
 // ============================================================================
-// 十二、持仓管理
+// POSITION MANAGEMENT
 // ============================================================================
 
-if strategy.position_size != 0 and posDirection != 0
-    atr_ = atrVal > 0 ? atrVal : 0.01
-    d    = posDirection
+if strategy.position_size != 0 and posDir != 0
+    d       = posDir
+    atr_    = atrVal > 0 ? atrVal : 0.01
+    barsIn  = bar_index - entryBarIdx
 
-    // --- 1. 强制收盘平仓 ---
-    if pastForceClose
-        strategy.close_all(comment="收盘平仓")
-        resetPosition()
+    // 1. Force close at session end
+    if pastClose
+        strategy.close_all(comment="Session Close")
+        posDir := 0
+
+    // 2. Max hold time
+    else if barsIn >= maxHoldBars
+        strategy.close_all(comment="Max Hold")
+        posDir := 0
+
     else
-        // --- 2. 亏损时间退出 ---
-        barsHeld = bar_index - entryBarIndex
-        isLosing = (d == 1 and close < avgEntryPrice) or (d == -1 and close > avgEntryPrice)
-        if barsHeld > losersMaxBars and isLosing
-            strategy.close_all(comment="亏损超时")
-            resetPosition()
+        // 3. Stop check
+        stopped = (d == 1 and low <= runnerStop) or (d == -1 and high >= runnerStop)
+
+        if stopped
+            strategy.close_all(comment=lockDone ? "Chandelier" : "Stop")
+            // Track daily R loss
+            if posRisk > 0
+                pnlEst = (runnerStop - entryPrice) * d * posShares
+                if pnlEst < 0
+                    dailyRLoss := dailyRLoss + math.abs(pnlEst) / (posShares * posRisk)
+            posDir := 0
+
         else
-            // --- 3. TP 激活检查 ---
-            if not tpActive
-                profitAtr = (close - avgEntryPrice) * d / atr_
-                if profitAtr >= tpActivateAtr
-                    tpActive := true
+            // 4. Lock: 20% at 0.3R
+            if not lockDone
+                lockTarget = d == 1 ? entryPrice + lockRR * posRisk : entryPrice - lockRR * posRisk
+                lockHit = (d == 1 and high >= lockTarget) or (d == -1 and low <= lockTarget)
 
-            // --- 4. 更新跟踪止损 ---
-            if tpActive
-                // TP1: 前一根蜡烛低点/高点 ± 偏移 (最紧)
-                if not tp1Done and bar_index > 1
+                if lockHit
+                    // Close lock portion
+                    closeQty = math.min(lockShares, math.abs(strategy.position_size) - 1)
+                    if closeQty > 0
+                        if d == 1
+                            strategy.close("Long", qty=closeQty, comment="Lock 0.3R")
+                        else
+                            strategy.close("Short", qty=closeQty, comment="Lock 0.3R")
+
+                    lockDone := true
+                    // Move stop to breakeven
                     if d == 1
-                        newTp1 = low[1] - tp1Offset
-                        tp1Stop := math.max(tp1Stop, newTp1)
+                        runnerStop := math.max(runnerStop, entryPrice)
                     else
-                        newTp1 = high[1] + tp1Offset
-                        tp1Stop := math.min(tp1Stop, newTp1)
+                        runnerStop := math.min(runnerStop, entryPrice)
 
-                // TP2: EMA - 中等 ATR
-                if not tp2Done
-                    if d == 1
-                        newTp2 = ema20 - tp2AtrMult * atr_
-                        tp2Stop := math.max(tp2Stop, newTp2)
-                    else
-                        newTp2 = ema20 + tp2AtrMult * atr_
-                        tp2Stop := math.min(tp2Stop, newTp2)
-
-                // TP3: EMA - 宽 ATR
+            // 5. Chandelier trail (after lock, after enough bars)
+            if lockDone and barsIn >= chandBars
                 if d == 1
-                    newTp3 = ema20 - tp3AtrMult * atr_
-                    tp3Stop := math.max(tp3Stop, newTp3)
+                    hh = ta.highest(high, chandBars)
+                    newStop = hh - chandMult * atr_
+                    runnerStop := math.max(runnerStop, newStop)
                 else
-                    newTp3 = ema20 + tp3AtrMult * atr_
-                    tp3Stop := math.min(tp3Stop, newTp3)
+                    ll = ta.lowest(low, chandBars)
+                    newStop = ll + chandMult * atr_
+                    runnerStop := math.min(runnerStop, newStop)
 
-            // --- 5. 检查止损触发 ---
-            if tpActive
-                // TP1: 最紧跟踪 → 先出 30%
-                if not tp1Done and tp1Qty > 0
-                    tp1Hit = (d == 1 and low <= tp1Stop) or (d == -1 and high >= tp1Stop)
-                    if tp1Hit
-                        closeQty = math.min(tp1Qty, math.abs(strategy.position_size) - 1)
-                        if closeQty > 0
-                            if d == 1
-                                strategy.close("Long", qty=closeQty, comment="TP1-30%")
-                            else
-                                strategy.close("Short", qty=closeQty, comment="TP1-30%")
-                            tp1Done := true
-
-                // TP2: 中等跟踪 → 再出 40% (TP1完成后)
-                if tp1Done and not tp2Done and tp2Qty > 0
-                    tp2Hit = (d == 1 and low <= tp2Stop) or (d == -1 and high >= tp2Stop)
-                    if tp2Hit
-                        closeQty = math.min(tp2Qty, math.abs(strategy.position_size) - 1)
-                        if closeQty > 0
-                            if d == 1
-                                strategy.close("Long", qty=closeQty, comment="TP2-40%")
-                            else
-                                strategy.close("Short", qty=closeQty, comment="TP2-40%")
-                            tp2Done := true
-
-                // TP3: 最宽跟踪 → 清仓 (TP1+TP2完成后)
-                if tp1Done and tp2Done
-                    tp3Hit = (d == 1 and low <= tp3Stop) or (d == -1 and high >= tp3Stop)
-                    if tp3Hit
-                        strategy.close_all(comment="TP3-30%")
-                        resetPosition()
-            else
-                // TP 未激活: 初始止损保护全部仓位
-                slHit = (d == 1 and low <= initialStop) or (d == -1 and high >= initialStop)
-                if slHit
-                    strategy.close_all(comment="初始止损")
-                    resetPosition()
-
-            // --- 6. 加仓检查 ---
-            if enableAddon and addonCount < maxAddons and not pastEntryCutoff and posDirection != 0
-
-                // 趋势仍然一致
-                addonTrendOk = trendDir == d
-
-                // 必须盈利
-                currentSize  = math.abs(strategy.position_size)
-                unrealized   = (close - avgEntryPrice) * d * currentSize
-                inProfit     = unrealized > 0
-
-                // 回撤到 EMA 区间
-                addonDist   = math.abs(close - ema20)
-                addonInZone = addonDist <= atr_ * addonPbMult
-
-                if addonTrendOk and inProfit and addonInZone
-                    addonPbBars := addonPbBars + 1
-                else
-                    addonPbBars := 0
-
-                // 动量确认 + 最小K线
-                addonMomentum = (d == 1 and close > high[1]) or (d == -1 and close < low[1])
-
-                if addonPbBars >= addonMinBars and addonMomentum and addonTrendOk and inProfit
-                    // 加仓止损
-                    addonStopP = d == 1 ? low - initStopMult * atr_ : high + initStopMult * atr_
-                    addonRisk  = math.abs(close - addonStopP)
-
-                    if addonRisk > 0
-                        // 保本仓位: 加仓亏损 = 现有浮盈
-                        addonSize = math.floor(unrealized / addonRisk)
-
-                        // 仓位上限
-                        maxTotal   = math.floor(strategy.equity * maxPosPct / 100 / close)
-                        addonSize := math.min(addonSize, maxTotal - currentSize)
-
-                        if addonSize > 0
-                            // 更新平均入场价
-                            oldCost        = avgEntryPrice * totalSize
-                            totalSize     := totalSize + addonSize
-                            avgEntryPrice := (oldCost + close * addonSize) / totalSize
-                            addonCount    := addonCount + 1
-                            addonPbBars   := 0
-
-                            // 加仓份额归入 TP3 (最宽跟踪)
-                            tp3Qty := tp3Qty + addonSize
-
-                            if d == 1
-                                strategy.entry("Long", strategy.long, qty=addonSize)
-                            else
-                                strategy.entry("Short", strategy.short, qty=addonSize)
-
-// 仓位清零后自动重置
-if strategy.position_size == 0 and posDirection != 0
-    resetPosition()
+// Reset when flat
+if strategy.position_size == 0 and posDir != 0
+    posDir := 0
 
 // ============================================================================
-// 十三、图表绘制
+// CHART
 // ============================================================================
 
-// --- 均线 ---
-plot(ema20, "EMA 20", color=color.new(color.orange, 0), linewidth=2)
+// EMAs
+plot(ema20, "EMA 20", color=color.orange, linewidth=2)
 plot(ema50, "EMA 50", color=color.new(color.blue, 30), linewidth=1)
 
-// --- Chop Box 区间 ---
-boxHighPlot = inChop ? boxHigh : na
-boxLowPlot  = inChop ? boxLow : na
-p_bh = plot(boxHighPlot, "Box High", color=color.new(color.gray, 40), style=plot.style_stepline)
-p_bl = plot(boxLowPlot,  "Box Low",  color=color.new(color.gray, 40), style=plot.style_stepline)
-fill(p_bh, p_bl, color=inChop ? color.new(color.gray, 88) : na, title="Chop Zone")
-
-// --- 盘整背景 ---
-bgcolor(inChop ? color.new(color.yellow, 92) : na, title="盘整区背景")
-
-// --- 趋势背景 ---
-trendBg = trendDir == 1 ? color.new(color.green, 94) : trendDir == -1 ? color.new(color.red, 94) : na
-bgcolor(not inChop ? trendBg : na, title="趋势背景")
-
-// --- 入场信号 (检测 strategy 入场) ---
+// Entry/Exit markers
 longEntry  = strategy.position_size > 0 and strategy.position_size[1] <= 0
 shortEntry = strategy.position_size < 0 and strategy.position_size[1] >= 0
-plotshape(longEntry,  "做多入场", shape.triangleup,   location.belowbar, color.new(color.green, 0), size=size.normal)
-plotshape(shortEntry, "做空入场", shape.triangledown, location.abovebar, color.new(color.red, 0),   size=size.normal)
+plotshape(longEntry,  "Long",  shape.triangleup,   location.belowbar, color.green, size=size.normal)
+plotshape(shortEntry, "Short", shape.triangledown, location.abovebar, color.red,   size=size.normal)
 
-// --- 止损/止盈线 ---
-activeSL = posDirection != 0 and strategy.position_size != 0
-plot(activeSL and not tpActive ? initialStop : na, "初始止损", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
-plot(activeSL and tpActive and not tp1Done ? tp1Stop : na, "TP1止损", color=color.new(color.orange, 0), linewidth=1, style=plot.style_linebr)
-plot(activeSL and tpActive and tp1Done and not tp2Done ? tp2Stop : na, "TP2止损", color=color.new(color.yellow, 20), linewidth=1, style=plot.style_linebr)
-plot(activeSL and tpActive and tp1Done and tp2Done ? tp3Stop : na, "TP3止损", color=color.new(color.lime, 0), linewidth=1, style=plot.style_linebr)
+// Touch dots
+isTouchVis = canScan and ((trendDir == 1 and low <= ema20 + atrVal * touchTol and low >= ema20 - atrVal * touchBelow) or (trendDir == -1 and high >= ema20 - atrVal * touchTol and high <= ema20 + atrVal * touchBelow))
+plotshape(isTouchVis, "Touch", shape.circle, location.absolute, color.new(color.yellow, 20), size=size.tiny, offset=0)
 
-// --- 平均入场线 ---
-plot(activeSL ? avgEntryPrice : na, "平均入场价", color=color.new(color.white, 30), linewidth=1, style=plot.style_linebr)
+// Active stop line
+hasPos = strategy.position_size != 0 and posDir != 0
+plot(hasPos ? runnerStop : na, "Stop", color=lockDone ? color.lime : color.red, linewidth=2, style=plot.style_linebr)
+plot(hasPos ? entryPrice : na, "Entry", color=color.new(color.white, 40), linewidth=1, style=plot.style_linebr)
+
+// Signal line (pending order)
+hasSig = signalDir != 0 and bar_index <= signalExpiry
+plot(hasSig ? signalPrice : na, "Signal Line", color=color.new(color.aqua, 0), linewidth=1, style=plot.style_linebr)
+
+// Trend background
+trendBg = trendDir == 1 ? color.new(color.green, 94) : trendDir == -1 ? color.new(color.red, 94) : na
+bgcolor(trendBg, title="Trend")
+
+// Daily limit warning
+bgcolor(dailyLimitHit ? color.new(color.orange, 85) : na, title="Daily Limit")
 
 // ============================================================================
-// 十四、信息面板
+// INFO PANEL
 // ============================================================================
 
-var table infoPanel = table.new(position.top_right, 2, 14,
+var table info = table.new(position.top_right, 2, 8,
      bgcolor=color.new(color.black, 80),
-     border_width=1,
-     border_color=color.new(color.gray, 60))
+     border_width=1, border_color=color.new(color.gray, 60))
 
 if barstate.islast
-    table.cell(infoPanel, 0, 0, "指标", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 0, "状态", text_color=color.white, text_size=size.small)
+    table.cell(info, 0, 0, "Trend",     text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 0, trendDir == 1 ? "BULL" : trendDir == -1 ? "BEAR" : "FLAT",
+         text_color=trendDir == 1 ? color.green : trendDir == -1 ? color.red : color.gray, text_size=size.small)
 
-    // Chop 状态
-    chopText  = inChop ? "盘整中" : "趋势中"
-    chopColor = inChop ? color.yellow : color.green
-    table.cell(infoPanel, 0, 1, "市场状态", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 1, chopText, text_color=chopColor, text_size=size.small)
+    table.cell(info, 0, 1, "Position",  text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 1, strategy.position_size != 0 ? str.tostring(strategy.position_size) : "Flat",
+         text_color=strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.gray, text_size=size.small)
 
-    // 趋势方向
-    dirText  = trendDir == 1 ? "多头" : trendDir == -1 ? "空头" : "无"
-    dirColor = trendDir == 1 ? color.green : trendDir == -1 ? color.red : color.gray
-    table.cell(infoPanel, 0, 2, "趋势", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 2, dirText, text_color=dirColor, text_size=size.small)
+    table.cell(info, 0, 2, "Lock",      text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 2, lockDone ? "Done (BE)" : "Pending", text_color=lockDone ? color.lime : color.yellow, text_size=size.small)
 
-    // 斜率
-    table.cell(infoPanel, 0, 3, "EMA斜率", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 3, str.tostring(emaSlope, "#.####") + "%/bar", text_color=color.white, text_size=size.small)
+    table.cell(info, 0, 3, "Daily R",   text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 3, str.tostring(dailyRLoss, "#.##") + " / " + str.tostring(dailyRLimit),
+         text_color=dailyLimitHit ? color.red : color.white, text_size=size.small)
 
-    // 平均绝对斜率
-    table.cell(infoPanel, 0, 4, "平均|斜率|", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 4, str.tostring(avgAbsSlope, "#.####") + " (阈值:" + str.tostring(chopThreshold) + ")", text_color=color.white, text_size=size.small)
+    table.cell(info, 0, 4, "ATR",       text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 4, str.tostring(atrVal, "#.##"), text_color=color.white, text_size=size.small)
 
-    // Box 范围
-    boxRange = inChop ? str.tostring(boxHigh, "#.##") + " - " + str.tostring(boxLow, "#.##") : "N/A"
-    table.cell(infoPanel, 0, 5, "Chop Box", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 5, boxRange, text_color=color.white, text_size=size.small)
+    table.cell(info, 0, 5, "Signal",    text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 5, signalDir != 0 ? str.tostring(signalPrice, "#.##") : "None",
+         text_color=signalDir != 0 ? color.aqua : color.gray, text_size=size.small)
 
-    // 均线排列
-    emaOrder = ema20 > ema50 ? "多头排列" : ema20 < ema50 ? "空头排列" : "交叉"
-    table.cell(infoPanel, 0, 6, "均线", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 6, emaOrder, text_color=color.white, text_size=size.small)
+    table.cell(info, 0, 6, "Session",   text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 6, pastClose ? "Closed" : pastEntry ? "No Entry" : "Active",
+         text_color=pastClose ? color.red : pastEntry ? color.yellow : color.green, text_size=size.small)
 
-    // ATR
-    table.cell(infoPanel, 0, 7, "ATR", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 7, str.tostring(atrVal, "#.##"), text_color=color.white, text_size=size.small)
-
-    // 持仓
-    posText  = strategy.position_size > 0 ? "多头 " + str.tostring(math.abs(strategy.position_size)) : strategy.position_size < 0 ? "空头 " + str.tostring(math.abs(strategy.position_size)) : "空仓"
-    posColor = strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.gray
-    table.cell(infoPanel, 0, 8, "持仓", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 8, posText, text_color=posColor, text_size=size.small)
-
-    // TP 状态
-    tpText = not tpActive ? "未激活" : tp1Done and tp2Done ? "TP3跟踪中" : tp1Done ? "TP2跟踪中" : "TP1跟踪中"
-    table.cell(infoPanel, 0, 9, "止盈", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 9, tpText, text_color=color.white, text_size=size.small)
-
-    // 加仓次数
-    table.cell(infoPanel, 0, 10, "加仓", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 10, str.tostring(addonCount) + "/" + str.tostring(maxAddons), text_color=color.white, text_size=size.small)
-
-    // 每日交易
-    table.cell(infoPanel, 0, 11, "今日交易", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 11, str.tostring(dailyTradeCount) + "/" + str.tostring(maxDailyTrades), text_color=color.white, text_size=size.small)
-
-    // 回撤状态
-    pbText = pbState == 0 ? "等待回撤" : "区间内(" + str.tostring(pbBarCount) + ")"
-    table.cell(infoPanel, 0, 12, "回撤", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 12, pbText, text_color=pbState == 1 ? color.yellow : color.white, text_size=size.small)
-
-    // 时间
-    timeText = pastForceClose ? "已收盘" : pastEntryCutoff ? "停止入场" : "交易中"
-    table.cell(infoPanel, 0, 13, "时间", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 13, timeText, text_color=pastEntryCutoff ? color.yellow : color.green, text_size=size.small)
+    table.cell(info, 0, 7, "Bars Held", text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 7, posDir != 0 ? str.tostring(bar_index - entryBarIdx) : "—",
+         text_color=color.white, text_size=size.small)
 
 // ============================================================================
-// 十五、报警
+// ALERTS
 // ============================================================================
 
-alertcondition(longEntry,  "做多入场", "Chop-Box 趋势做多: EMA20回撤弹跳入场")
-alertcondition(shortEntry, "做空入场", "Chop-Box 趋势做空: EMA20回撤弹跳入场")
-alertcondition(not inChop[1] and inChop, "进入盘整", "市场进入 Chop Box 盘整区间")
-alertcondition(inChop[1] and not inChop, "突破盘整", "价格突破 Chop Box, 趋势开始")
+alertcondition(longEntry,  "Long Entry",  "Plan F Long: EMA20 touch bounce")
+alertcondition(shortEntry, "Short Entry", "Plan F Short: EMA20 touch bounce")
+alertcondition(dailyLimitHit and not dailyLimitHit[1], "Daily Limit", "Daily R limit hit — no more entries")
