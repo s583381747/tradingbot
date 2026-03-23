@@ -1,0 +1,49 @@
+================================================================================
+AUDIT REPORT: gen0
+================================================================================
+Strategy file: strategy_gen0.py
+Data: data/QQQ_1Min_Polygon_2y_clean.csv
+
+1. FULL 2-YEAR BACKTEST
+----------------------------------------
+  PF=0.777  Return=-1.45%  Trades=83 (0.17/day)
+  WR=25.3%  Sharpe=-0.285  MaxDD=3.07%
+  Won=21  Lost=62  GrossWon=$5064  GrossLost=$6514
+  AvgWin=$241  AvgLoss=$105  R:R=2.3
+
+2. BUY & HOLD COMPARISON
+----------------------------------------
+  QQQ Buy&Hold: 30.81%
+  Strategy: -1.45%
+  UNDERPERFORMS buy-and-hold
+
+3. WALK-FORWARD (Year 1 vs Year 2)
+----------------------------------------
+  Y1: PF=0.603 Ret=-1.12% Trades=36 (9W/27L) [FAIL]
+  Y2: PF=0.907 Ret=-0.35% Trades=47 (12W/35L) [FAIL]
+  Walk-forward: FAIL
+
+4. QUARTERLY BREAKDOWN
+----------------------------------------
+  + 2024Q2: PF=1.554 Ret=0.10% Trades=4 (2W/2L)
+  - 2024Q3: PF=0.806 Ret=-0.18% Trades=12 (3W/9L)
+  + 2024Q4: PF=4.807 Ret=0.36% Trades=4 (2W/2L)
+  - 2025Q1: PF=0.186 Ret=-1.40% Trades=19 (3W/16L)
+  - 2025Q2: PF=0.523 Ret=-1.23% Trades=23 (4W/19L)
+  - 2025Q3: PF=0.000 Ret=-0.34% Trades=4 (0W/4L)
+  + 2025Q4: PF=5.831 Ret=1.21% Trades=8 (4W/4L)
+  - 2026Q1: PF=0.946 Ret=-0.03% Trades=10 (3W/7L)
+  Profitable quarters: 3/8 (38%)
+
+5. STATISTICAL SIGNIFICANCE
+----------------------------------------
+  Breakeven WR: 30.3%  Actual WR: 25.3%
+  Observed PF: 0.777
+  MC mean PF: 0.793  MC 95th: 1.168
+  p-value: 0.5454
+  → NOT SIGNIFICANT
+
+6. DATA QUALITY COMPARISON (IEX vs Polygon)
+----------------------------------------
+  IEX:     PF=1.063 Ret=0.29% Trades=64
+  Polygon: PF=0.777 Ret=-1.45% Trades=83

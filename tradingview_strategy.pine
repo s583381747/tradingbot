@@ -1,424 +1,528 @@
 // ============================================================================
-// 日内趋势跟随策略 - 20 EMA 回撤系统
-// Intraday Trend Following Strategy - 20 EMA Pullback System
+// Chop-Box Trend Following v2
+// 核心: 识别 Chop Box → 突破后入场 → EMA20 回撤弹跳 → 30/40/30 阶梯止盈
 //
-// 基于 @rijindoudoujin 频道 35 个视频 AI 分析提取的交易系统
-// 核心逻辑: 趋势确认 → 等待回撤至 20EMA/VWAP → 突破入场 → 趋势跟踪出场
+// 逻辑链:
+// 1. Chop Box 检测 (EMA 斜率持续性) → 盘整区间内不做
+// 2. 趋势确认 (EMA 斜率 + 双均线排列)
+// 3. 入场: 价格回撤至 EMA20 附近 → 弹跳确认 → 入场
+// 4. 止盈: 30% 蜡烛跟踪 / 40% EMA-中ATR / 30% EMA-宽ATR
+// 5. 加仓: 再次测试 EMA20 支撑 → 保本仓位加仓
 // ============================================================================
 //@version=5
-strategy("日内趋势跟随 - 20EMA回撤系统",
+strategy("Chop-Box 趋势跟随 v2",
      overlay=true,
      initial_capital=100000,
-     default_qty_type=strategy.percent_of_equity,
-     default_qty_value=100,
+     default_qty_type=strategy.fixed,
+     default_qty_value=1,
      commission_type=strategy.commission.percent,
      commission_value=0.01,
      slippage=1,
      process_orders_on_close=false,
      calc_on_every_tick=false,
-     max_bars_back=500)
+     max_bars_back=500,
+     pyramiding=3)
 
 // ============================================================================
 // 一、参数设置
 // ============================================================================
 
-// --- 均线参数 ---
-emaLen        = input.int(20,    "EMA 周期",          minval=5,   maxval=100, group="均线设置")
-emaSlowLen    = input.int(40,    "慢速 EMA 周期",      minval=20,  maxval=200, group="均线设置")
-emaFilterLen  = input.int(60,    "趋势过滤 EMA 周期",   minval=30,  maxval=300, group="均线设置")
+// --- 核心指标 ---
+emaLen         = input.int(20,     "EMA 快线周期",       minval=5,    maxval=100,  group="核心指标")
+emaSlowLen     = input.int(50,     "EMA 慢线周期",       minval=20,   maxval=200,  group="核心指标")
+atrLen         = input.int(14,     "ATR 周期",           minval=5,    maxval=30,   group="核心指标")
+slopePeriod    = input.int(5,      "斜率计算周期",       minval=2,    maxval=20,   group="核心指标")
 
-// --- VWAP ---
-useVwap       = input.bool(true, "使用 VWAP 辅助确认",  group="VWAP设置")
+// --- Chop Box 检测 ---
+chopAvgPeriod  = input.int(20,     "斜率平均周期",       minval=5,    maxval=50,   group="Chop Box")
+chopThreshold  = input.float(0.005,"斜率阈值(%/bar)",    minval=0.001,maxval=0.05, step=0.001, group="Chop Box")
+chopMinBars    = input.int(5,      "最小盘整K线数",      minval=2,    maxval=30,   group="Chop Box")
 
-// --- 趋势确认参数 ---
-trendBars     = input.int(5,     "趋势确认K线数",       minval=2,   maxval=20,  group="趋势确认")
-trendAtrMult  = input.float(1.0, "趋势强度ATR倍数",     minval=0.1, maxval=5.0, step=0.1, group="趋势确认")
+// --- 回撤入场 ---
+pbTouchMult    = input.float(1.2,  "回撤区间(xATR)",     minval=0.3,  maxval=3.0,  step=0.1, group="入场")
+pbMinBars      = input.int(1,      "最小回撤K线",        minval=1,    maxval=10,   group="入场")
 
-// --- 回撤参数 ---
-pullbackTol   = input.float(0.3, "回撤容差(ATR倍数)",   minval=0.1, maxval=2.0, step=0.1, group="回撤设置")
-maxPullbackBars = input.int(8,   "最大回撤K线数",       minval=2,   maxval=20,  group="回撤设置")
+// --- 初始止损 ---
+initStopMult   = input.float(1.5,  "初始止损(xATR)",     minval=0.5,  maxval=5.0,  step=0.1, group="止损")
 
-// --- 成交量确认 ---
-useVolFilter  = input.bool(true, "使用成交量过滤",      group="成交量")
-volMaLen      = input.int(20,    "成交量均线周期",       minval=5,   maxval=50,  group="成交量")
-volThresh     = input.float(0.8, "最低成交量倍数",       minval=0.3, maxval=3.0, step=0.1, group="成交量")
+// --- 三阶梯止盈 (30/40/30) ---
+tpActivateAtr  = input.float(2.0,  "TP激活阈值(xATR)",   minval=0.5,  maxval=5.0,  step=0.1, group="止盈")
+tp1Pct         = input.float(30,   "TP1仓位%",           minval=10,   maxval=50,   step=5,   group="止盈")
+tp2Pct         = input.float(40,   "TP2仓位%",           minval=10,   maxval=50,   step=5,   group="止盈")
+tp1Offset      = input.float(0.10, "TP1蜡烛偏移($)",     minval=0.01, maxval=1.0,  step=0.01,group="止盈")
+tp2AtrMult     = input.float(3.0,  "TP2 EMA偏移(xATR)",  minval=1.0,  maxval=8.0,  step=0.5, group="止盈")
+tp3AtrMult     = input.float(6.0,  "TP3 EMA偏移(xATR)",  minval=2.0,  maxval=12.0, step=0.5, group="止盈")
 
-// --- K线形态确认 ---
-useWickFilter = input.bool(true, "使用影线拒绝确认",     group="K线形态")
-wickRatio     = input.float(1.5, "影线/实体比率阈值",    minval=0.5, maxval=5.0, step=0.1, group="K线形态")
+// --- 加仓 ---
+enableAddon    = input.bool(true,  "启用加仓",           group="加仓")
+maxAddons      = input.int(2,      "最大加仓次数",       minval=1,    maxval=5,    group="加仓")
+addonPbMult    = input.float(1.2,  "加仓回撤区间(xATR)", minval=0.5,  maxval=3.0,  step=0.1, group="加仓")
+addonMinBars   = input.int(2,      "加仓最小K线",        minval=1,    maxval=10,   group="加仓")
 
-// --- 止损止盈 ---
-slType        = input.string("回撤摆动点", "止损方式", options=["回撤摆动点", "ATR倍数", "固定百分比"], group="风险管理")
-slAtrMult     = input.float(1.5, "止损ATR倍数",        minval=0.5, maxval=5.0, step=0.1, group="风险管理")
-slFixedPct    = input.float(0.5, "固定止损百分比",       minval=0.1, maxval=5.0, step=0.1, group="风险管理")
-useTrailStop  = input.bool(true, "使用追踪止损(沿EMA)", group="风险管理")
-trailOffset   = input.float(0.3, "追踪止损偏移(ATR倍数)", minval=0.1, maxval=3.0, step=0.1, group="风险管理")
-tpAtrMult     = input.float(3.0, "止盈ATR倍数",        minval=1.0, maxval=10.0, step=0.5, group="风险管理")
-useTP         = input.bool(false, "使用固定止盈",       group="风险管理")
-rrRatio       = input.float(2.0, "风险回报比",          minval=1.0, maxval=10.0, step=0.5, group="风险管理")
-
-// --- 分批止盈 ---
-usePartialTP  = input.bool(true,  "使用分批止盈",       group="分批止盈")
-tp1Pct        = input.float(50.0, "第一次止盈仓位%",     minval=10,  maxval=90,  step=10, group="分批止盈")
-tp1RR         = input.float(1.5,  "第一次止盈RR倍数",    minval=0.5, maxval=5.0, step=0.5, group="分批止盈")
-tp2RR         = input.float(3.0,  "第二次止盈RR倍数",    minval=1.0, maxval=10.0, step=0.5, group="分批止盈")
+// --- 风险管理 ---
+riskPct        = input.float(1.0,  "单笔风险%",          minval=0.1,  maxval=5.0,  step=0.1, group="风险管理")
+maxPosPct      = input.float(25,   "最大仓位%",          minval=5,    maxval=50,   step=5,   group="风险管理")
+maxDailyTrades = input.int(6,      "每日最大交易",       minval=1,    maxval=20,   group="风险管理")
+maxDailyLossPct= input.float(2.0,  "每日最大亏损%",      minval=0.5,  maxval=10.0, step=0.5, group="风险管理")
+losersMaxBars  = input.int(60,     "亏损最大持仓K线",    minval=10,   maxval=200,  group="风险管理")
 
 // --- 时间过滤 ---
-useTimeFilter = input.bool(true,  "使用时间过滤",       group="时间过滤")
-startHour     = input.int(10,     "开始交易时间(时)",    minval=0,   maxval=23,  group="时间过滤")
-startMin      = input.int(30,     "开始交易时间(分)",    minval=0,   maxval=59,  group="时间过滤")
-endHour       = input.int(15,     "停止开仓时间(时)",    minval=0,   maxval=23,  group="时间过滤")
-endMin        = input.int(30,     "停止开仓时间(分)",    minval=0,   maxval=59,  group="时间过滤")
-closeHour     = input.int(15,     "收盘平仓时间(时)",    minval=0,   maxval=23,  group="时间过滤")
-closeMin      = input.int(55,     "收盘平仓时间(分)",    minval=0,   maxval=59,  group="时间过滤")
-
-// --- Open Range Breakout ---
-useORB        = input.bool(true,  "使用ORB过滤(避开宽幅第一根K线)", group="ORB过滤")
-orbBars       = input.int(6,      "ORB观察K线数(5分钟图=30分钟)",  minval=1, maxval=24, group="ORB过滤")
-orbAtrMult    = input.float(2.0,  "ORB宽幅阈值(ATR倍数)",         minval=0.5, maxval=5.0, step=0.1, group="ORB过滤")
+noEntryHour    = input.int(15,     "停止入场(时)",       minval=0,    maxval=23,   group="时间")
+noEntryMin     = input.int(30,     "停止入场(分)",       minval=0,    maxval=59,   group="时间")
+closeHour      = input.int(15,     "强制平仓(时)",       minval=0,    maxval=23,   group="时间")
+closeMinute    = input.int(58,     "强制平仓(分)",       minval=0,    maxval=59,   group="时间")
 
 // --- 交易方向 ---
-tradeDir      = input.string("双向", "交易方向", options=["双向", "仅做多", "仅做空"], group="交易方向")
-
-// --- 每日最大交易次数 ---
-maxDailyTrades = input.int(3, "每日最大交易次数", minval=1, maxval=10, group="风险管理")
+tradeDir       = input.string("双向", "交易方向", options=["双向", "仅做多", "仅做空"], group="交易方向")
 
 // ============================================================================
 // 二、指标计算
 // ============================================================================
 
-// --- 均线 ---
 ema20  = ta.ema(close, emaLen)
-ema40  = ta.ema(close, emaSlowLen)
-ema60  = ta.ema(close, emaFilterLen)
+ema50  = ta.ema(close, emaSlowLen)
+atrVal = ta.atr(atrLen)
 
-// --- ATR ---
-atrVal = ta.atr(14)
+// EMA 斜率: 标准化为 %/bar
+emaPrev     = ta.valuewhen(true, ema20[slopePeriod], 0)
+rawSlope    = nz((ema20 - ema20[slopePeriod]) / slopePeriod)
+emaSlope    = close > 0 ? rawSlope / close * 100 : 0.0
 
-// --- VWAP ---
-vwapVal = useVwap ? ta.vwap(hlc3) : ema20
+// 平均绝对斜率 (用于 chop 检测)
+avgAbsSlope = ta.sma(math.abs(emaSlope), chopAvgPeriod)
 
-// --- 成交量均线 ---
-volMa  = ta.sma(volume, volMaLen)
+// ============================================================================
+// 三、时间管理
+// ============================================================================
 
-// --- 日内时间判断 ---
-currentTime  = hour * 60 + minute
-startTime    = startHour * 60 + startMin
-endTime      = endHour * 60 + endMin
-closeTime    = closeHour * 60 + closeMin
-inTradeWindow = (not useTimeFilter) or (currentTime >= startTime and currentTime <= endTime)
-isCloseTime   = useTimeFilter and (currentTime >= closeTime)
+currentTime    = hour * 60 + minute
+noEntryTime    = noEntryHour * 60 + noEntryMin
+forceCloseTime = closeHour * 60 + closeMinute
+pastEntryCutoff = currentTime >= noEntryTime
+pastForceClose  = currentTime >= forceCloseTime
 
-// --- 新交易日判断 ---
 isNewDay = ta.change(time("D")) != 0
 
-// --- 每日交易次数追踪 ---
-var int dailyTradeCount = 0
+// ============================================================================
+// 四、每日状态追踪
+// ============================================================================
+
+var int   dailyTradeCount = 0
+var float dailyStartValue = 0.0
+
 if isNewDay
     dailyTradeCount := 0
-canTradeToday = dailyTradeCount < maxDailyTrades
+    dailyStartValue := strategy.equity
+
+dailyLoss = dailyStartValue > 0 ? (dailyStartValue - strategy.equity) / dailyStartValue : 0.0
+dailyLimitHit = dailyTradeCount >= maxDailyTrades or dailyLoss >= maxDailyLossPct / 100
 
 // ============================================================================
-// 三、趋势判断
+// 五、Chop Box 检测 (核心过滤器)
 // ============================================================================
 
-// 多头趋势: 价格在EMA20上方, EMA20在EMA40上方, EMA40在EMA60上方 (多头排列)
-bullTrend = ema20 > ema40 and close > ema20
-// 更严格的多头趋势: 加上EMA60过滤
-bullTrendStrong = ema20 > ema40 and ema40 > ema60 and close > ema20
+var bool  inChop       = true
+var float boxHigh      = 0.0
+var float boxLow       = 999999.0
+var int   chopBarCount = 0
 
-// 空头趋势: 价格在EMA20下方, EMA20在EMA40下方 (空头排列)
-bearTrend = ema20 < ema40 and close < ema20
-// 更严格的空头趋势
-bearTrendStrong = ema20 < ema40 and ema40 < ema60 and close < ema20
-
-// 趋势强度: 最近N根K线的价格位移超过ATR阈值
-trendDisplacement = math.abs(close - close[trendBars])
-isTrendStrong = trendDisplacement > atrVal * trendAtrMult
-
-// 最终趋势信号
-isBullish = bullTrend and isTrendStrong
-isBearish = bearTrend and isTrendStrong
-
-// ============================================================================
-// 四、回撤检测 - 价格触及20EMA/VWAP
-// ============================================================================
-
-// 价格接近EMA20 (在ATR容差范围内)
-nearEma20  = math.abs(low - ema20) <= atrVal * pullbackTol or
-             math.abs(high - ema20) <= atrVal * pullbackTol or
-             (low <= ema20 and high >= ema20)
-
-// 价格接近VWAP
-nearVwap   = useVwap and (math.abs(low - vwapVal) <= atrVal * pullbackTol or
-             math.abs(high - vwapVal) <= atrVal * pullbackTol or
-             (low <= vwapVal and high >= vwapVal))
-
-// 回撤触及EMA或VWAP
-isPullback = nearEma20 or nearVwap
-
-// 回撤窗口: 最近N根K线内出现过回撤
-var int barsSincePullback = 999
-if isPullback
-    barsSincePullback := 0
-else
-    barsSincePullback := barsSincePullback + 1
-
-inPullbackWindow = barsSincePullback <= maxPullbackBars and barsSincePullback > 0
-
-// ============================================================================
-// 五、入场确认信号
-// ============================================================================
-
-// --- 突破确认 ---
-// 做多: 价格突破回撤期间的局部高点
-prevSwingHigh = ta.highest(high, maxPullbackBars)
-breakoutLong  = close > high[1] and close > ema20
-
-// 做空: 价格跌破回撤期间的局部低点
-prevSwingLow  = ta.lowest(low, maxPullbackBars)
-breakoutShort = close < low[1] and close < ema20
-
-// --- 成交量确认 ---
-volConfirm = (not useVolFilter) or (volume >= volMa * volThresh)
-
-// --- 影线拒绝确认 (针对做空: 长上影线表示阻力) ---
-bodySize    = math.abs(close - open)
-upperWick   = high - math.max(close, open)
-lowerWick   = math.min(close, open) - low
-
-// 做空时: 回撤K线有长上影线 (被20EMA/VWAP阻挡)
-bearishWick = useWickFilter ? (upperWick > bodySize * wickRatio) : true
-// 做多时: 回撤K线有长下影线 (被20EMA/VWAP支撑)
-bullishWick = useWickFilter ? (lowerWick > bodySize * wickRatio) : true
-
-// 检查回撤窗口内是否出现过拒绝形态
-var bool hadBullishWick = false
-var bool hadBearishWick = false
-if isPullback
-    hadBullishWick := false
-    hadBearishWick := false
-if bullishWick and barsSincePullback <= maxPullbackBars
-    hadBullishWick := true
-if bearishWick and barsSincePullback <= maxPullbackBars
-    hadBearishWick := true
-
-wickConfirmLong  = (not useWickFilter) or hadBullishWick
-wickConfirmShort = (not useWickFilter) or hadBearishWick
-
-// --- ORB 过滤: 避开开盘第一根K线过长的日子 ---
-var float orbHigh = na
-var float orbLow  = na
-var bool  orbWide = false
-
+// 新交易日重置 chop box
 if isNewDay
-    orbHigh := high
-    orbLow  := low
-    orbWide := false
+    inChop       := true
+    boxHigh      := high
+    boxLow       := low
+    chopBarCount := 1
 
-// 追踪ORB区间
-orbBarCount = ta.barssince(isNewDay)
-if orbBarCount > 0 and orbBarCount <= orbBars
-    orbHigh := math.max(nz(orbHigh), high)
-    orbLow  := math.min(nz(orbLow), low)
-
-if orbBarCount == orbBars
-    orbRange = nz(orbHigh) - nz(orbLow)
-    orbWide  := orbRange > atrVal * orbAtrMult
-
-orbClear = (not useORB) or (not orbWide) or (orbBarCount > orbBars * 2)
-
-// ============================================================================
-// 六、完整入场条件
-// ============================================================================
-
-// --- 做多入场 ---
-longCondition = isBullish and              // 1. 确认上升趋势
-                 inPullbackWindow and       // 2. 最近回撤过EMA/VWAP
-                 breakoutLong and           // 3. 突破回撤高点
-                 volConfirm and             // 4. 成交量确认
-                 wickConfirmLong and         // 5. K线形态确认
-                 inTradeWindow and          // 6. 在交易时间窗口内
-                 canTradeToday and          // 7. 未超过每日交易限制
-                 orbClear and              // 8. ORB过滤通过
-                 (tradeDir != "仅做空") and  // 9. 允许做多
-                 strategy.position_size == 0 // 10. 当前无持仓
-
-// --- 做空入场 ---
-shortCondition = isBearish and
-                  inPullbackWindow and
-                  breakoutShort and
-                  volConfirm and
-                  wickConfirmShort and
-                  inTradeWindow and
-                  canTradeToday and
-                  orbClear and
-                  (tradeDir != "仅做多") and
-                  strategy.position_size == 0
-
-// ============================================================================
-// 七、止损计算
-// ============================================================================
-
-// 回撤期间的摆动低点/高点
-pullbackLow  = ta.lowest(low, maxPullbackBars + 1)
-pullbackHigh = ta.highest(high, maxPullbackBars + 1)
-
-// 持仓跟踪变量
-var float entryPrice   = na
-var float stopLoss     = na
-var float takeProfit   = na
-var float trailStop    = na
-var bool  tp1Hit       = false
-var float initialRisk  = na
-
-// ============================================================================
-// 八、执行交易
-// ============================================================================
-
-// --- 做多入场 ---
-if longCondition
-    entryPrice := close
-
-    // 计算止损
-    if slType == "回撤摆动点"
-        stopLoss := pullbackLow - atrVal * 0.1  // 摆动低点下方留一点缓冲
-    else if slType == "ATR倍数"
-        stopLoss := close - atrVal * slAtrMult
+// Chop Box 状态机
+if not isNewDay and not na(avgAbsSlope) and bar_index > chopAvgPeriod
+    if inChop
+        // 检查突破: 斜率回升 + 价格突破 box
+        if avgAbsSlope >= chopThreshold and chopBarCount >= chopMinBars
+            if close > boxHigh or close < boxLow
+                inChop := false
+        // 仍在盘整: 扩展 box
+        if inChop and avgAbsSlope < chopThreshold
+            boxHigh      := math.max(boxHigh, high)
+            boxLow       := math.min(boxLow, low)
+            chopBarCount := chopBarCount + 1
     else
-        stopLoss := close * (1 - slFixedPct / 100)
-
-    initialRisk := close - stopLoss
-
-    // 计算止盈
-    if useTP
-        takeProfit := close + initialRisk * rrRatio
-    else
-        takeProfit := close + atrVal * tpAtrMult
-
-    trailStop := stopLoss
-    tp1Hit    := false
-    dailyTradeCount := dailyTradeCount + 1
-
-    strategy.entry("做多", strategy.long)
-    strategy.exit("多头止损", "做多", stop=stopLoss)
-
-// --- 做空入场 ---
-if shortCondition
-    entryPrice := close
-
-    if slType == "回撤摆动点"
-        stopLoss := pullbackHigh + atrVal * 0.1
-    else if slType == "ATR倍数"
-        stopLoss := close + atrVal * slAtrMult
-    else
-        stopLoss := close * (1 + slFixedPct / 100)
-
-    initialRisk := stopLoss - close
-
-    if useTP
-        takeProfit := close - initialRisk * rrRatio
-    else
-        takeProfit := close - atrVal * tpAtrMult
-
-    trailStop := stopLoss
-    tp1Hit    := false
-    dailyTradeCount := dailyTradeCount + 1
-
-    strategy.entry("做空", strategy.short)
-    strategy.exit("空头止损", "做空", stop=stopLoss)
+        // 趋势中: 斜率变平 → 新的 chop box
+        if avgAbsSlope < chopThreshold
+            inChop       := true
+            boxHigh      := high
+            boxLow       := low
+            chopBarCount := 1
 
 // ============================================================================
-// 九、持仓管理 - 追踪止损 & 分批止盈
+// 六、趋势检测
 // ============================================================================
 
-if strategy.position_size > 0  // 持有多头
-    // 追踪止损: 沿EMA20移动
-    if useTrailStop
-        newTrail = ema20 - atrVal * trailOffset
-        if newTrail > trailStop and newTrail < close
-            trailStop := newTrail
-            strategy.exit("多头追踪止损", "做多", stop=trailStop)
-
-    // 分批止盈
-    if usePartialTP and not tp1Hit and not na(initialRisk)
-        tp1Level = entryPrice + initialRisk * tp1RR
-        if close >= tp1Level
-            strategy.close("做多", comment="分批止盈1", qty_percent=tp1Pct)
-            tp1Hit := true
-            // 止损移至盈亏平衡点
-            trailStop := entryPrice
-            strategy.exit("多头保本止损", "做多", stop=trailStop)
-
-    // 最终止盈
-    if useTP and close >= takeProfit
-        strategy.close("做多", comment="止盈")
-
-if strategy.position_size < 0  // 持有空头
-    if useTrailStop
-        newTrail = ema20 + atrVal * trailOffset
-        if newTrail < trailStop and newTrail > close
-            trailStop := newTrail
-            strategy.exit("空头追踪止损", "做空", stop=trailStop)
-
-    if usePartialTP and not tp1Hit and not na(initialRisk)
-        tp1Level = entryPrice - initialRisk * tp1RR
-        if close <= tp1Level
-            strategy.close("做空", comment="分批止盈1", qty_percent=tp1Pct)
-            tp1Hit := true
-            trailStop := entryPrice
-            strategy.exit("空头保本止损", "做空", stop=trailStop)
-
-    if useTP and close <= takeProfit
-        strategy.close("做空", comment="止盈")
-
-// --- 收盘前强制平仓 (日内交易核心规则) ---
-if isCloseTime and strategy.position_size != 0
-    strategy.close_all(comment="收盘平仓")
+// 趋势 = 斜率足够 + 均线排列一致
+trendDir = 0
+if not na(emaSlope) and math.abs(emaSlope) >= chopThreshold
+    if emaSlope > 0 and ema20 > ema50
+        trendDir := 1
+    else if emaSlope < 0 and ema20 < ema50
+        trendDir := -1
 
 // ============================================================================
-// 十、图表绘制
+// 七、回撤状态机
+// ============================================================================
+
+var int   pbState    = 0      // 0=等待, 1=在回撤区间内
+var int   pbDir      = 0      // 跟踪的趋势方向
+var int   pbBarCount = 0      // 在区间内的K线数
+var float pbExtreme  = 0.0    // 回撤期间的极值 (做多=最低点, 做空=最高点)
+
+// 新交易日重置回撤状态
+if isNewDay
+    pbState    := 0
+    pbDir      := 0
+    pbBarCount := 0
+    pbExtreme  := 0.0
+
+// ============================================================================
+// 八、持仓状态变量
+// ============================================================================
+
+var int   posDirection   = 0       // 1=多, -1=空, 0=无
+var float avgEntryPrice  = 0.0     // 加权平均入场价
+var int   totalSize      = 0       // 总仓位
+var int   addonCount     = 0       // 已加仓次数
+var int   addonPbBars    = 0       // 加仓回撤计数
+var int   entryBarIndex  = 0       // 入场 bar 索引
+
+// 三阶梯 TP 状态
+var bool  tpActive       = false   // TP 是否激活
+var bool  tp1Done        = false   // TP1 已出场
+var bool  tp2Done        = false   // TP2 已出场
+var int   tp1Qty         = 0       // TP1 数量
+var int   tp2Qty         = 0       // TP2 数量
+var int   tp3Qty         = 0       // TP3 数量
+var float tp1Stop        = 0.0     // TP1 跟踪止损
+var float tp2Stop        = 0.0     // TP2 跟踪止损
+var float tp3Stop        = 0.0     // TP3 跟踪止损
+var float initialStop    = 0.0     // 初始止损
+
+// ============================================================================
+// 九、仓位计算函数
+// ============================================================================
+
+calcSize(float entryP, float stopP) =>
+    risk = math.abs(entryP - stopP)
+    sizeByRisk    = risk > 0 ? math.floor(strategy.equity * riskPct / 100 / risk) : 0
+    sizeByCapital = entryP > 0 ? math.floor(strategy.equity * maxPosPct / 100 / entryP) : 0
+    math.max(1, math.min(sizeByRisk, sizeByCapital))
+
+// ============================================================================
+// 十、重置持仓状态
+// ============================================================================
+
+resetPosition() =>
+    posDirection   := 0
+    avgEntryPrice  := 0.0
+    totalSize      := 0
+    addonCount     := 0
+    addonPbBars    := 0
+    entryBarIndex  := 0
+    tpActive       := false
+    tp1Done        := false
+    tp2Done        := false
+    tp1Qty         := 0
+    tp2Qty         := 0
+    tp3Qty         := 0
+    tp1Stop        := 0.0
+    tp2Stop        := 0.0
+    tp3Stop        := 0.0
+    initialStop    := 0.0
+    pbState        := 0
+
+// ============================================================================
+// 十一、入场逻辑
+// ============================================================================
+
+// 入场条件门控
+canEnter = not inChop and not pastEntryCutoff and not dailyLimitHit
+           and trendDir != 0 and strategy.position_size == 0
+
+// 趋势翻转时重置回撤
+if trendDir != pbDir and trendDir != 0
+    pbDir      := trendDir
+    pbState    := 0
+    pbBarCount := 0
+    pbExtreme  := 0.0
+
+// 更新回撤状态机 (仅在无持仓且允许入场时)
+if canEnter and not na(atrVal) and atrVal > 0
+    dist   = math.abs(close - ema20)
+    inZone = dist <= atrVal * pbTouchMult
+
+    if pbState == 0
+        if inZone
+            pbState    := 1
+            pbBarCount := 1
+            pbExtreme  := trendDir == 1 ? low : high
+    else if pbState == 1
+        if inZone
+            pbBarCount := pbBarCount + 1
+            if trendDir == 1
+                pbExtreme := math.min(pbExtreme, low)
+            else
+                pbExtreme := math.max(pbExtreme, high)
+        else
+            // 离开区间 → 检查弹跳确认
+            onSide   = (trendDir == 1 and close > ema20) or (trendDir == -1 and close < ema20)
+            momentum = (trendDir == 1 and close > high[1]) or (trendDir == -1 and close < low[1])
+
+            if onSide and pbBarCount >= pbMinBars and momentum
+                // ═══ 执行入场 ═══
+                entryP = close
+                atr_   = atrVal > 0 ? atrVal : 0.01
+
+                // 止损: 回撤极值 ± ATR
+                stopP = trendDir == 1 ? pbExtreme - initStopMult * atr_ : pbExtreme + initStopMult * atr_
+
+                qty = calcSize(entryP, stopP)
+
+                // 允许交易方向检查
+                dirOk = (tradeDir == "双向") or (tradeDir == "仅做多" and trendDir == 1) or (tradeDir == "仅做空" and trendDir == -1)
+
+                if qty > 0 and dirOk
+                    posDirection  := trendDir
+                    avgEntryPrice := entryP
+                    totalSize     := qty
+                    addonCount    := 0
+                    addonPbBars   := 0
+                    entryBarIndex := bar_index
+                    initialStop   := stopP
+                    tpActive      := false
+                    tp1Done       := false
+                    tp2Done       := false
+
+                    // 分配 TP 仓位 (30/40/30)
+                    if qty >= 3
+                        tp1Qty := math.max(1, math.floor(qty * tp1Pct / 100))
+                        tp2Qty := math.max(1, math.floor(qty * tp2Pct / 100))
+                        tp3Qty := qty - tp1Qty - tp2Qty
+                        if tp3Qty <= 0
+                            tp3Qty := 1
+                            tp2Qty := qty - tp1Qty - 1
+                    else
+                        // 仓位太小: 全部放宽止盈
+                        tp1Qty  := 0
+                        tp2Qty  := 0
+                        tp3Qty  := qty
+                        tp1Done := true
+                        tp2Done := true
+
+                    tp1Stop := stopP
+                    tp2Stop := stopP
+                    tp3Stop := stopP
+
+                    dailyTradeCount := dailyTradeCount + 1
+
+                    if trendDir == 1
+                        strategy.entry("Long", strategy.long, qty=qty)
+                    else
+                        strategy.entry("Short", strategy.short, qty=qty)
+
+            // 重置回撤状态
+            pbState    := 0
+            pbBarCount := 0
+            pbExtreme  := 0.0
+
+// ============================================================================
+// 十二、持仓管理
+// ============================================================================
+
+if strategy.position_size != 0 and posDirection != 0
+    atr_ = atrVal > 0 ? atrVal : 0.01
+    d    = posDirection
+
+    // --- 1. 强制收盘平仓 ---
+    if pastForceClose
+        strategy.close_all(comment="收盘平仓")
+        resetPosition()
+    else
+        // --- 2. 亏损时间退出 ---
+        barsHeld = bar_index - entryBarIndex
+        isLosing = (d == 1 and close < avgEntryPrice) or (d == -1 and close > avgEntryPrice)
+        if barsHeld > losersMaxBars and isLosing
+            strategy.close_all(comment="亏损超时")
+            resetPosition()
+        else
+            // --- 3. TP 激活检查 ---
+            if not tpActive
+                profitAtr = (close - avgEntryPrice) * d / atr_
+                if profitAtr >= tpActivateAtr
+                    tpActive := true
+
+            // --- 4. 更新跟踪止损 ---
+            if tpActive
+                // TP1: 前一根蜡烛低点/高点 ± 偏移 (最紧)
+                if not tp1Done and bar_index > 1
+                    if d == 1
+                        newTp1 = low[1] - tp1Offset
+                        tp1Stop := math.max(tp1Stop, newTp1)
+                    else
+                        newTp1 = high[1] + tp1Offset
+                        tp1Stop := math.min(tp1Stop, newTp1)
+
+                // TP2: EMA - 中等 ATR
+                if not tp2Done
+                    if d == 1
+                        newTp2 = ema20 - tp2AtrMult * atr_
+                        tp2Stop := math.max(tp2Stop, newTp2)
+                    else
+                        newTp2 = ema20 + tp2AtrMult * atr_
+                        tp2Stop := math.min(tp2Stop, newTp2)
+
+                // TP3: EMA - 宽 ATR
+                if d == 1
+                    newTp3 = ema20 - tp3AtrMult * atr_
+                    tp3Stop := math.max(tp3Stop, newTp3)
+                else
+                    newTp3 = ema20 + tp3AtrMult * atr_
+                    tp3Stop := math.min(tp3Stop, newTp3)
+
+            // --- 5. 检查止损触发 ---
+            if tpActive
+                // TP1: 最紧跟踪 → 先出 30%
+                if not tp1Done and tp1Qty > 0
+                    tp1Hit = (d == 1 and low <= tp1Stop) or (d == -1 and high >= tp1Stop)
+                    if tp1Hit
+                        closeQty = math.min(tp1Qty, math.abs(strategy.position_size) - 1)
+                        if closeQty > 0
+                            if d == 1
+                                strategy.close("Long", qty=closeQty, comment="TP1-30%")
+                            else
+                                strategy.close("Short", qty=closeQty, comment="TP1-30%")
+                            tp1Done := true
+
+                // TP2: 中等跟踪 → 再出 40% (TP1完成后)
+                if tp1Done and not tp2Done and tp2Qty > 0
+                    tp2Hit = (d == 1 and low <= tp2Stop) or (d == -1 and high >= tp2Stop)
+                    if tp2Hit
+                        closeQty = math.min(tp2Qty, math.abs(strategy.position_size) - 1)
+                        if closeQty > 0
+                            if d == 1
+                                strategy.close("Long", qty=closeQty, comment="TP2-40%")
+                            else
+                                strategy.close("Short", qty=closeQty, comment="TP2-40%")
+                            tp2Done := true
+
+                // TP3: 最宽跟踪 → 清仓 (TP1+TP2完成后)
+                if tp1Done and tp2Done
+                    tp3Hit = (d == 1 and low <= tp3Stop) or (d == -1 and high >= tp3Stop)
+                    if tp3Hit
+                        strategy.close_all(comment="TP3-30%")
+                        resetPosition()
+            else
+                // TP 未激活: 初始止损保护全部仓位
+                slHit = (d == 1 and low <= initialStop) or (d == -1 and high >= initialStop)
+                if slHit
+                    strategy.close_all(comment="初始止损")
+                    resetPosition()
+
+            // --- 6. 加仓检查 ---
+            if enableAddon and addonCount < maxAddons and not pastEntryCutoff and posDirection != 0
+
+                // 趋势仍然一致
+                addonTrendOk = trendDir == d
+
+                // 必须盈利
+                currentSize  = math.abs(strategy.position_size)
+                unrealized   = (close - avgEntryPrice) * d * currentSize
+                inProfit     = unrealized > 0
+
+                // 回撤到 EMA 区间
+                addonDist   = math.abs(close - ema20)
+                addonInZone = addonDist <= atr_ * addonPbMult
+
+                if addonTrendOk and inProfit and addonInZone
+                    addonPbBars := addonPbBars + 1
+                else
+                    addonPbBars := 0
+
+                // 动量确认 + 最小K线
+                addonMomentum = (d == 1 and close > high[1]) or (d == -1 and close < low[1])
+
+                if addonPbBars >= addonMinBars and addonMomentum and addonTrendOk and inProfit
+                    // 加仓止损
+                    addonStopP = d == 1 ? low - initStopMult * atr_ : high + initStopMult * atr_
+                    addonRisk  = math.abs(close - addonStopP)
+
+                    if addonRisk > 0
+                        // 保本仓位: 加仓亏损 = 现有浮盈
+                        addonSize = math.floor(unrealized / addonRisk)
+
+                        // 仓位上限
+                        maxTotal   = math.floor(strategy.equity * maxPosPct / 100 / close)
+                        addonSize := math.min(addonSize, maxTotal - currentSize)
+
+                        if addonSize > 0
+                            // 更新平均入场价
+                            oldCost        = avgEntryPrice * totalSize
+                            totalSize     := totalSize + addonSize
+                            avgEntryPrice := (oldCost + close * addonSize) / totalSize
+                            addonCount    := addonCount + 1
+                            addonPbBars   := 0
+
+                            // 加仓份额归入 TP3 (最宽跟踪)
+                            tp3Qty := tp3Qty + addonSize
+
+                            if d == 1
+                                strategy.entry("Long", strategy.long, qty=addonSize)
+                            else
+                                strategy.entry("Short", strategy.short, qty=addonSize)
+
+// 仓位清零后自动重置
+if strategy.position_size == 0 and posDirection != 0
+    resetPosition()
+
+// ============================================================================
+// 十三、图表绘制
 // ============================================================================
 
 // --- 均线 ---
 plot(ema20, "EMA 20", color=color.new(color.orange, 0), linewidth=2)
-plot(ema40, "EMA 40", color=color.new(color.blue, 30), linewidth=1)
-plot(ema60, "EMA 60", color=color.new(color.purple, 30), linewidth=1)
+plot(ema50, "EMA 50", color=color.new(color.blue, 30), linewidth=1)
 
-// --- VWAP ---
-plot(useVwap ? vwapVal : na, "VWAP", color=color.new(color.teal, 0), linewidth=2, style=plot.style_stepline)
+// --- Chop Box 区间 ---
+boxHighPlot = inChop ? boxHigh : na
+boxLowPlot  = inChop ? boxLow : na
+p_bh = plot(boxHighPlot, "Box High", color=color.new(color.gray, 40), style=plot.style_stepline)
+p_bl = plot(boxLowPlot,  "Box Low",  color=color.new(color.gray, 40), style=plot.style_stepline)
+fill(p_bh, p_bl, color=inChop ? color.new(color.gray, 88) : na, title="Chop Zone")
+
+// --- 盘整背景 ---
+bgcolor(inChop ? color.new(color.yellow, 92) : na, title="盘整区背景")
 
 // --- 趋势背景 ---
-bgColor = isBullish ? color.new(color.green, 92) : isBearish ? color.new(color.red, 92) : na
-bgcolor(bgColor, title="趋势背景")
+trendBg = trendDir == 1 ? color.new(color.green, 94) : trendDir == -1 ? color.new(color.red, 94) : na
+bgcolor(not inChop ? trendBg : na, title="趋势背景")
 
-// --- 回撤标记 ---
-plotshape(isPullback and isBullish, "多头回撤", shape.circle, location.belowbar, color.new(color.green, 50), size=size.tiny)
-plotshape(isPullback and isBearish, "空头回撤", shape.circle, location.abovebar, color.new(color.red, 50), size=size.tiny)
+// --- 入场信号 (检测 strategy 入场) ---
+longEntry  = strategy.position_size > 0 and strategy.position_size[1] <= 0
+shortEntry = strategy.position_size < 0 and strategy.position_size[1] >= 0
+plotshape(longEntry,  "做多入场", shape.triangleup,   location.belowbar, color.new(color.green, 0), size=size.normal)
+plotshape(shortEntry, "做空入场", shape.triangledown, location.abovebar, color.new(color.red, 0),   size=size.normal)
 
-// --- 入场信号 ---
-plotshape(longCondition,  "做多信号", shape.triangleup,   location.belowbar, color.new(color.green, 0), size=size.normal)
-plotshape(shortCondition, "做空信号", shape.triangledown, location.abovebar, color.new(color.red, 0),   size=size.normal)
+// --- 止损/止盈线 ---
+activeSL = posDirection != 0 and strategy.position_size != 0
+plot(activeSL and not tpActive ? initialStop : na, "初始止损", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(activeSL and tpActive and not tp1Done ? tp1Stop : na, "TP1止损", color=color.new(color.orange, 0), linewidth=1, style=plot.style_linebr)
+plot(activeSL and tpActive and tp1Done and not tp2Done ? tp2Stop : na, "TP2止损", color=color.new(color.yellow, 20), linewidth=1, style=plot.style_linebr)
+plot(activeSL and tpActive and tp1Done and tp2Done ? tp3Stop : na, "TP3止损", color=color.new(color.lime, 0), linewidth=1, style=plot.style_linebr)
 
-// --- 止损线 ---
-slPlot = strategy.position_size != 0 ? (useTrailStop ? trailStop : stopLoss) : na
-plot(slPlot, "止损线", color=color.new(color.red, 0), linewidth=1, style=plot.style_linebr)
-
-// --- 止盈线 ---
-tpPlot = strategy.position_size != 0 and useTP ? takeProfit : na
-plot(tpPlot, "止盈线", color=color.new(color.green, 0), linewidth=1, style=plot.style_linebr)
-
-// --- ORB区间 ---
-orbHighPlot = useORB and orbBarCount <= orbBars * 2 ? orbHigh : na
-orbLowPlot  = useORB and orbBarCount <= orbBars * 2 ? orbLow : na
-plot(orbHighPlot, "ORB高", color=color.new(color.gray, 50), linewidth=1, style=plot.style_stepline)
-plot(orbLowPlot,  "ORB低", color=color.new(color.gray, 50), linewidth=1, style=plot.style_stepline)
+// --- 平均入场线 ---
+plot(activeSL ? avgEntryPrice : na, "平均入场价", color=color.new(color.white, 30), linewidth=1, style=plot.style_linebr)
 
 // ============================================================================
-// 十一、信息面板
+// 十四、信息面板
 // ============================================================================
 
-var table infoPanel = table.new(position.top_right, 2, 12,
+var table infoPanel = table.new(position.top_right, 2, 14,
      bgcolor=color.new(color.black, 80),
      border_width=1,
      border_color=color.new(color.gray, 60))
@@ -427,63 +531,74 @@ if barstate.islast
     table.cell(infoPanel, 0, 0, "指标", text_color=color.white, text_size=size.small)
     table.cell(infoPanel, 1, 0, "状态", text_color=color.white, text_size=size.small)
 
-    // 趋势状态
-    trendText = isBullish ? "🔼 多头" : isBearish ? "🔽 空头" : "➡️ 震荡"
-    trendColor = isBullish ? color.green : isBearish ? color.red : color.gray
-    table.cell(infoPanel, 0, 1, "趋势", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 1, trendText, text_color=trendColor, text_size=size.small)
+    // Chop 状态
+    chopText  = inChop ? "盘整中" : "趋势中"
+    chopColor = inChop ? color.yellow : color.green
+    table.cell(infoPanel, 0, 1, "市场状态", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 1, 1, chopText, text_color=chopColor, text_size=size.small)
 
-    // EMA排列
-    emaOrder = ema20 > ema40 and ema40 > ema60 ? "多头排列" : ema20 < ema40 and ema40 < ema60 ? "空头排列" : "交叉"
-    table.cell(infoPanel, 0, 2, "均线", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 2, emaOrder, text_color=color.white, text_size=size.small)
+    // 趋势方向
+    dirText  = trendDir == 1 ? "多头" : trendDir == -1 ? "空头" : "无"
+    dirColor = trendDir == 1 ? color.green : trendDir == -1 ? color.red : color.gray
+    table.cell(infoPanel, 0, 2, "趋势", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 1, 2, dirText, text_color=dirColor, text_size=size.small)
 
-    // 回撤状态
-    pbText = isPullback ? "触及中" : inPullbackWindow ? "窗口内(" + str.tostring(barsSincePullback) + ")" : "等待"
-    table.cell(infoPanel, 0, 3, "回撤", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 3, pbText, text_color=isPullback ? color.yellow : color.white, text_size=size.small)
+    // 斜率
+    table.cell(infoPanel, 0, 3, "EMA斜率", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 1, 3, str.tostring(emaSlope, "#.####") + "%/bar", text_color=color.white, text_size=size.small)
 
-    // 成交量
-    volText = volume >= volMa * volThresh ? "充足" : "不足"
-    volColor = volume >= volMa * volThresh ? color.green : color.red
-    table.cell(infoPanel, 0, 4, "成交量", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 4, volText, text_color=volColor, text_size=size.small)
+    // 平均绝对斜率
+    table.cell(infoPanel, 0, 4, "平均|斜率|", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 1, 4, str.tostring(avgAbsSlope, "#.####") + " (阈值:" + str.tostring(chopThreshold) + ")", text_color=color.white, text_size=size.small)
+
+    // Box 范围
+    boxRange = inChop ? str.tostring(boxHigh, "#.##") + " - " + str.tostring(boxLow, "#.##") : "N/A"
+    table.cell(infoPanel, 0, 5, "Chop Box", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 1, 5, boxRange, text_color=color.white, text_size=size.small)
+
+    // 均线排列
+    emaOrder = ema20 > ema50 ? "多头排列" : ema20 < ema50 ? "空头排列" : "交叉"
+    table.cell(infoPanel, 0, 6, "均线", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 1, 6, emaOrder, text_color=color.white, text_size=size.small)
 
     // ATR
-    table.cell(infoPanel, 0, 5, "ATR", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 5, str.tostring(atrVal, "#.##"), text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 0, 7, "ATR", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 1, 7, str.tostring(atrVal, "#.##"), text_color=color.white, text_size=size.small)
 
-    // 持仓状态
-    posText = strategy.position_size > 0 ? "多头" : strategy.position_size < 0 ? "空头" : "空仓"
+    // 持仓
+    posText  = strategy.position_size > 0 ? "多头 " + str.tostring(math.abs(strategy.position_size)) : strategy.position_size < 0 ? "空头 " + str.tostring(math.abs(strategy.position_size)) : "空仓"
     posColor = strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.gray
-    table.cell(infoPanel, 0, 6, "持仓", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 6, posText, text_color=posColor, text_size=size.small)
+    table.cell(infoPanel, 0, 8, "持仓", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 1, 8, posText, text_color=posColor, text_size=size.small)
 
-    // 止损价
-    slText = not na(stopLoss) and strategy.position_size != 0 ? str.tostring(trailStop, "#.##") : "-"
-    table.cell(infoPanel, 0, 7, "止损", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 7, slText, text_color=color.red, text_size=size.small)
+    // TP 状态
+    tpText = not tpActive ? "未激活" : tp1Done and tp2Done ? "TP3跟踪中" : tp1Done ? "TP2跟踪中" : "TP1跟踪中"
+    table.cell(infoPanel, 0, 9, "止盈", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 1, 9, tpText, text_color=color.white, text_size=size.small)
 
-    // 今日交易次数
-    table.cell(infoPanel, 0, 8, "今日交易", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 8, str.tostring(dailyTradeCount) + "/" + str.tostring(maxDailyTrades), text_color=color.white, text_size=size.small)
+    // 加仓次数
+    table.cell(infoPanel, 0, 10, "加仓", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 1, 10, str.tostring(addonCount) + "/" + str.tostring(maxAddons), text_color=color.white, text_size=size.small)
 
-    // ORB状态
-    orbText = not useORB ? "关闭" : orbWide ? "宽幅(避开)" : "正常"
-    orbColor = orbWide ? color.red : color.green
-    table.cell(infoPanel, 0, 9, "ORB", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 9, orbText, text_color=orbColor, text_size=size.small)
+    // 每日交易
+    table.cell(infoPanel, 0, 11, "今日交易", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 1, 11, str.tostring(dailyTradeCount) + "/" + str.tostring(maxDailyTrades), text_color=color.white, text_size=size.small)
 
-    // 交易时间
-    timeText = inTradeWindow ? "交易中" : isCloseTime ? "收盘" : "等待"
-    table.cell(infoPanel, 0, 10, "时间", text_color=color.white, text_size=size.small)
-    table.cell(infoPanel, 1, 10, timeText, text_color=inTradeWindow ? color.green : color.yellow, text_size=size.small)
+    // 回撤状态
+    pbText = pbState == 0 ? "等待回撤" : "区间内(" + str.tostring(pbBarCount) + ")"
+    table.cell(infoPanel, 0, 12, "回撤", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 1, 12, pbText, text_color=pbState == 1 ? color.yellow : color.white, text_size=size.small)
+
+    // 时间
+    timeText = pastForceClose ? "已收盘" : pastEntryCutoff ? "停止入场" : "交易中"
+    table.cell(infoPanel, 0, 13, "时间", text_color=color.white, text_size=size.small)
+    table.cell(infoPanel, 1, 13, timeText, text_color=pastEntryCutoff ? color.yellow : color.green, text_size=size.small)
 
 // ============================================================================
-// 十二、报警条件
+// 十五、报警
 // ============================================================================
 
-alertcondition(longCondition,  "做多入场信号", "趋势跟随做多: 价格回撤20EMA后突破,趋势确认")
-alertcondition(shortCondition, "做空入场信号", "趋势跟随做空: 价格回撤20EMA后突破,趋势确认")
-alertcondition(isPullback and isBullish, "多头回撤提醒", "价格回撤至20EMA/VWAP附近,多头趋势中")
-alertcondition(isPullback and isBearish, "空头回撤提醒", "价格回撤至20EMA/VWAP附近,空头趋势中")
+alertcondition(longEntry,  "做多入场", "Chop-Box 趋势做多: EMA20回撤弹跳入场")
+alertcondition(shortEntry, "做空入场", "Chop-Box 趋势做空: EMA20回撤弹跳入场")
+alertcondition(not inChop[1] and inChop, "进入盘整", "市场进入 Chop Box 盘整区间")
+alertcondition(inChop[1] and not inChop, "突破盘整", "价格突破 Chop Box, 趋势开始")

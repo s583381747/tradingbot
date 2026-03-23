@@ -12,12 +12,19 @@ build/
 .venv/
 venv/
 
+# Data (large CSV files — download via download_polygon.py)
+data/*.csv
+
 # Data (large dirs)
 data/analyses/
 data/videos/
 data/knowledge/
 data/backtest_results/
 data/backtest_cache/
+
+# Runtime
+run.log
+results.tsv
 
 # IDE
 .idea/
