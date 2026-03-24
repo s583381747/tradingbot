@@ -7,7 +7,7 @@ from entry_signal import add_indicators
 print = functools.partial(print, flush=True)
 DATA_PATH = "data/QQQ_1Min_Polygon_2y_clean.csv"
 COMM = 0.005; CAPITAL = 100000; RISK_PCT = 0.01; MAX_FWD = 180
-# Plan F parameters (must match strategy_final.py)
+# Plan G parameters (must match strategy_final.py)
 TOUCH_TOL = 0.15; TOUCH_BELOW = 0.5; SIGNAL_OFFSET = 0.05; STOP_BUFFER = 0.3
 LOCK1_RR = 0.3; LOCK1_PCT = 0.20
 CHAND_BARS = 40; CHAND_MULT = 0.5    # Plan G

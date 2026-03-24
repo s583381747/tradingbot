@@ -1,5 +1,5 @@
 // ============================================================================
-// EMA20 Trend Following — Plan F (Production)
+// EMA20 Trend Following — Plan G (Production)
 //
 // Logic (matches strategy_final.py exactly):
 //   TREND:  close > EMA20 > EMA50 (bull) or close < EMA20 < EMA50 (bear)
@@ -9,12 +9,12 @@
 //   STOP:   touch_low - 0.3*ATR
 //   LOCK:   20% at 0.3R → move stop to breakeven
 //   RUNNER: 80% Chandelier trail: highest_high(40) - 0.5*ATR
-//   DAILY:  2.5R loss limit per day
+//   DAILY:  stop entries after 2.5R cumulative losing
 //
-// Validated: PF=2.55, +33%, 4431 trades, WR=77%, MaxDD=0.33%
+// 4-year validated: PF=2.51, +93%, 8874 trades, WR=77%, MaxDD=0.48%
 // ============================================================================
 //@version=6
-strategy("EMA20 Plan F",
+strategy("EMA20 Plan G",
      overlay=true,
      initial_capital=100000,
      default_qty_type=strategy.fixed,

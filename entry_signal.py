@@ -1,5 +1,5 @@
 """
-Shared entry signal detection — Plan F.
+Shared entry signal detection — Plan G.
 
 Single source of truth for: trend → touch → bounce → signal line.
 Used by strategy_final.py, walk_forward.py, stress_test.py, live_sim.py.

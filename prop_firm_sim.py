@@ -494,7 +494,7 @@ def main():
     (Max allowed: {firm['contracts_mnq']} MNQ)
 
   Strategy:
-    - Use Plan F entry/exit logic unchanged
+    - Use Plan G entry/exit logic unchanged
     - Set position size so each trade risks exactly ${best_overall['r_per_trade']:.0f}
     - Daily R limit: 2.5R = ${best_overall['r_per_trade'] * 2.5:.0f} (well within daily DD if applicable)
     - Expected to pass in {best_overall['avg_days']:.0f} trading days

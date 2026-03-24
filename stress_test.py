@@ -37,8 +37,8 @@ PARAMS = {
     "stop_buffer": 0.3,
     "lock1_rr": 0.3,
     "lock1_pct": 0.20,
-    "chandelier_bars": 40,       # Plan F
-    "chandelier_mult": 1.0,      # Plan F
+    "chandelier_bars": 40,       # Plan G
+    "chandelier_mult": 0.5,      # Plan G (tighter trail)
     "signal_valid_bars": 3,
     "max_hold_bars": 180,
     "risk_pct": 0.01,
