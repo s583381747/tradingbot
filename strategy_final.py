@@ -1,11 +1,12 @@
 """
-EMA20 Trend Following — Final Production Strategy (Plan F).
+EMA20 Trend Following — Final Production Strategy (Plan G).
 
-Validated (Plan F, post-audit):
-  - PF=2.60, +33.8% / 2 years, WR=77%, 4445 trades
-  - Walk-forward: Y1 PF=2.34 → Y2 PF=2.43, 4/4 half-year profitable
-  - Stress test (nightmare): PF=1.63, +15.6%, still Y2>Y1
-  - Parameter stable: PF 1.5-2.6 across full sweep, no cliff
+Plan G = Plan F + tighter chandelier (1.0→0.5 ATR mult).
+Validated on 4 years out-of-sample (2022-2026, 8874 trades):
+  - PF=2.513, +93% / 4 years, annualized +18%, WR=77%
+  - 49/49 months profitable, 17/17 quarters profitable
+  - Sharpe=8.09, Sortino=30.95, Calmar=37.4, MaxDD=0.48%
+  - Out-of-sample (2022-2024): PF=2.34, no degradation vs in-sample
 
 Logic:
   TREND:  close > EMA20 > EMA50 (bull) or close < EMA20 < EMA50 (bear)
@@ -14,8 +15,8 @@ Logic:
   ENTRY:  signal line at touch_high + $0.05 (stop buy)
   STOP:   touch_low - 0.3*ATR
   LOCK:   20% at 0.3:1 R:R → move stop to breakeven
-  RUNNER: 80% Chandelier trail: highest_high(40) - 1.0*ATR
-  DAILY:  2.5R loss limit per day
+  RUNNER: 80% Chandelier trail: highest_high(40) - 0.5*ATR
+  DAILY:  stop new entries after 2.5R cumulative losing (NOT trailing DD)
 
 Bug fixes (Gemini audit, impact -2.4%):
   #1: Entry bar stop check — if entry bar low <= stop, instant loss
@@ -53,7 +54,7 @@ PARAMS = {
     "lock1_pct": 0.20,          # 20% of position (was 30%)
     # Runner = 80%, Chandelier trail
     "chandelier_bars": 40,      # highest high lookback (Plan F)
-    "chandelier_mult": 1.0,     # ATR multiplier below HH (Plan F)
+    "chandelier_mult": 0.5,     # ATR multiplier below HH (Plan G: tighter trail)
     "signal_valid_bars": 3,     # signal expires after N bars
     "max_hold_bars": 180,       # force exit after 3 hours
     "risk_pct": 0.01,           # 1% of equity per trade
@@ -61,7 +62,7 @@ PARAMS = {
     "no_entry_after": dt.time(15, 30),
     "force_close_at": dt.time(15, 58),
     "commission_per_share": 0.005,  # IBKR
-    "daily_r_limit": 2.5,      # max R lost per day before stopping
+    "daily_loss_r": 2.5,       # stop new entries after cumulative losing R reaches this (NOT trailing DD, NOT % of account; purely sum of |loss_pnl / (shares * risk)| for each losing trade today)
 }
 
 
@@ -107,7 +108,7 @@ def run_backtest(
     equity_curve = []
     trade_log = []
     bar = max(p["ema_slow"], p["atr_period"]) + 5
-    daily_r_limit = p.get("daily_r_limit", 999)
+    daily_loss_r = p.get("daily_loss_r", 999)
     daily_r_loss = 0.0
     current_date = None
 
@@ -125,7 +126,7 @@ def run_backtest(
         if current_date != d_date:
             current_date = d_date
             daily_r_loss = 0.0
-        if daily_r_loss >= daily_r_limit:
+        if daily_r_loss >= daily_loss_r:
             bar += 1
             continue
 

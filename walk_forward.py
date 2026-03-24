@@ -10,8 +10,8 @@ COMM = 0.005; CAPITAL = 100000; RISK_PCT = 0.01; MAX_FWD = 180
 # Plan F parameters (must match strategy_final.py)
 TOUCH_TOL = 0.15; TOUCH_BELOW = 0.5; SIGNAL_OFFSET = 0.05; STOP_BUFFER = 0.3
 LOCK1_RR = 0.3; LOCK1_PCT = 0.20
-CHAND_BARS = 40; CHAND_MULT = 1.0
-DAILY_R_LIMIT = 2.5
+CHAND_BARS = 40; CHAND_MULT = 0.5    # Plan G
+DAILY_LOSS_R = 2.5                    # cumulative losing R, not trailing DD
 
 
 def run_period(args):
@@ -45,7 +45,7 @@ def run_period(args):
         d_date = dates[bar]
         if current_date != d_date:
             current_date = d_date; daily_r_loss = 0.0
-        if daily_r_loss >= DAILY_R_LIMIT: bar += 1; continue
+        if daily_r_loss >= DAILY_LOSS_R: bar += 1; continue
 
         trend = 0
         if close[bar] > ema[bar] and ema[bar] > ema_s[bar]: trend = 1

@@ -8,7 +8,7 @@
 //   ENTRY:  signal line = touch_high + offset (stop order, 3 bars valid)
 //   STOP:   touch_low - 0.3*ATR
 //   LOCK:   20% at 0.3R → move stop to breakeven
-//   RUNNER: 80% Chandelier trail: highest_high(40) - 1.0*ATR
+//   RUNNER: 80% Chandelier trail: highest_high(40) - 0.5*ATR
 //   DAILY:  2.5R loss limit per day
 //
 // Validated: PF=2.55, +33%, 4431 trades, WR=77%, MaxDD=0.33%
@@ -47,7 +47,7 @@ signalBars    = input.int(3,       "Signal Valid Bars",       minval=1,    maxva
 lockRR        = input.float(0.3,   "Lock R:R",            minval=0.1,  maxval=2.0,  step=0.1,  group="Exit")
 lockPct       = input.float(20,    "Lock Position %",     minval=5,    maxval=50,   step=5,    group="Exit")
 chandBars     = input.int(40,      "Chandelier Lookback", minval=10,   maxval=100,  group="Exit")
-chandMult     = input.float(1.0,   "Chandelier ATR Mult", minval=0.5,  maxval=3.0,  step=0.1,  group="Exit")
+chandMult     = input.float(0.5,   "Chandelier ATR Mult", minval=0.1,  maxval=3.0,  step=0.1,  group="Exit")
 
 // --- Risk ---
 riskPct       = input.float(1.0,   "Risk Per Trade %",    minval=0.1,  maxval=5.0,  step=0.1,  group="Risk")

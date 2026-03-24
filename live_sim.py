@@ -41,8 +41,8 @@ class LiveSimulator:
         self.stop_buffer = 0.3
         self.lock_rr = 0.3
         self.lock_pct = 0.20
-        self.chand_bars = 40         # Plan F
-        self.chand_mult = 1.0         # Plan F
+        self.chand_bars = 40         # Plan G
+        self.chand_mult = 0.5         # Plan G (tighter trail)
 
         # State
         self.position = 0          # shares held (+ long, - short)

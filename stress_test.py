@@ -46,7 +46,7 @@ PARAMS = {
     "no_entry_after": dt.time(15, 30),
     "force_close_at": dt.time(15, 58),
     "commission_per_share": 0.005,
-    "daily_r_limit": 2.5,
+    "daily_loss_r": 2.5,
 }
 
 
@@ -114,7 +114,7 @@ def run_backtest(df, capital=100_000, mode="baseline"):
         if current_date != d:
             current_date = d
             daily_r_loss = 0.0
-        if daily_r_loss >= p["daily_r_limit"]:
+        if daily_r_loss >= p["daily_loss_r"]:
             bar += 1
             continue
 
