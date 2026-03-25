@@ -53,6 +53,11 @@ STRATEGY = {
     "daily_loss_r": 2.0,
     "skip_after_win": 1,
 
+    # DCP filter (directional close position)
+    "use_dcp": False,            # enable DCP filter
+    "dcp_min": 0.5,              # touch bar DCP must be >= this
+    "dcp_slope_min": 0.0,        # 5-bar DCP slope must be > this
+
     # MNQ contracts (whole number, no partial)
     "n_contracts": 2,
 
@@ -104,6 +109,15 @@ def run(df_1min, s=None):
     ema_f = df["ema_f"].values; ema_s_arr = df["ema_s"].values; atr = df["atr"].values
     times = df.index.time; dates = df.index.date; n = len(df)
 
+    # Precompute DCP (raw, not directional — direction applied at entry)
+    dcp_raw = np.zeros(n)
+    for i in range(n):
+        rng = high[i] - low[i]
+        dcp_raw[i] = (close[i] - low[i]) / rng if rng > 0 else 0.5
+    dcp_slope = np.zeros(n)
+    for i in range(5, n):
+        dcp_slope[i] = (dcp_raw[i] - dcp_raw[i - 5]) / 5
+
     tf = max(1, s["tf_minutes"])
     max_hold = max(20, s["max_hold_bars"] // tf)
     chand_b = max(5, s["chand_bars"] // tf)
@@ -146,6 +160,20 @@ def run(df_1min, s=None):
             bar += 1; continue
         if skip_count > 0:
             skip_count -= 1; bar += 1; continue
+
+        # DCP filter
+        if s.get("use_dcp", False):
+            bar_rng = high[bar] - low[bar]
+            if bar_rng > 0:
+                dcp_val = (close[bar] - low[bar]) / bar_rng if trend == 1 else (high[bar] - close[bar]) / bar_rng
+            else:
+                dcp_val = 0.5
+            if dcp_val < s.get("dcp_min", 0.5):
+                bar += 1; continue
+            # DCP slope: for longs use raw slope, for shorts invert
+            slope_val = dcp_slope[bar] if trend == 1 else -dcp_slope[bar]
+            if slope_val <= s.get("dcp_slope_min", 0.0):
+                bar += 1; continue
 
         # DD control
         active_nc = nc
