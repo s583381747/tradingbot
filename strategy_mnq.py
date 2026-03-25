@@ -35,7 +35,7 @@ STRATEGY = {
     # MFE gate: tighten stop if price doesn't move fast enough
     "gate_bars": 3,              # check after N bars (0=off)
     "gate_mfe": 0.2,             # minimum MFE in R to pass
-    "gate_tighten": -0.2,        # move stop to entry + this R on fail
+    "gate_tighten": -0.15,       # move stop to entry + this R on fail
 
     # BE mechanism: NO partial exit. Just move the stop order.
     # When price reaches +be_trigger_r, move stop to entry + be_stop_r.
@@ -44,13 +44,13 @@ STRATEGY = {
     "be_stop_r": 0.15,           # stop moves to entry + 0.15R (room = 0.15R)
 
     # Chandelier trail (activates after BE trigger)
-    "chand_bars": 40,            # lookback in ORIGINAL timeframe bars
-    "chand_mult": 0.5,
+    "chand_bars": 30,            # lookback in ORIGINAL timeframe bars
+    "chand_mult": 0.3,
 
     # Position management
     "max_hold_bars": 180,
     "force_close_at": dt.time(15, 58),
-    "daily_loss_r": 2.5,
+    "daily_loss_r": 2.0,
     "skip_after_win": 1,
 
     # MNQ contracts (whole number, no partial)
