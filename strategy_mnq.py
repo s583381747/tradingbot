@@ -33,7 +33,7 @@ STRATEGY = {
     "stop_buffer": 0.4,       # ATR multiplier below touch low
 
     # Exit: Lock + BE
-    "lock_rr": 0.1,           # lock R:R target (0 = no lock)
+    "lock_rr": 0.2,           # lock R:R target (0 = no lock)
     "lock_pct": 0.05,         # fraction of position to lock
 
     # Exit: Chandelier
@@ -50,6 +50,9 @@ STRATEGY = {
     "force_close_at": dt.time(15, 58),
     "daily_loss_r": 2.5,
     "skip_after_win": 1,
+
+    # BE offset: move stop to entry + this fraction of R (covers costs)
+    "be_offset_r": 0.2,       # 0 = exact BE, 0.2 = entry + 0.2R (covers MNQ costs)
 
     # MNQ sizing
     "n_contracts": 2,
@@ -203,7 +206,8 @@ def run(df_1min, s=None):
             if stopped:
                 trade_r = (runner_stop - entry) / risk_qqq * trend
                 end_bar = bi
-                exit_reason = "be" if lock_done and abs(runner_stop - entry) < 0.02 else (
+                be_ref = entry + s.get("be_offset_r", 0) * risk_qqq * trend
+                exit_reason = "be" if lock_done and abs(runner_stop - be_ref) < 0.02 * risk_qqq else (
                     "trail" if lock_done else "stop")
                 break
 
@@ -211,8 +215,9 @@ def run(df_1min, s=None):
                 tgt = entry + s["lock_rr"] * risk_qqq * trend
                 if (trend == 1 and h >= tgt) or (trend == -1 and l <= tgt):
                     lock_done = True
-                    if trend == 1: runner_stop = max(runner_stop, entry)
-                    else: runner_stop = min(runner_stop, entry)
+                    be_level = entry + s.get("be_offset_r", 0) * risk_qqq * trend
+                    if trend == 1: runner_stop = max(runner_stop, be_level)
+                    else: runner_stop = min(runner_stop, be_level)
 
             if lock_done and k >= chand_b:
                 sk = max(1, k - chand_b + 1)
