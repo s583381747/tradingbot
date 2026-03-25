@@ -19,7 +19,7 @@ OOS_PATH = "data/QQQ_1Min_Barchart_2y_2022-2024_clean.csv"
 
 STRATEGY = {
     # Timeframe
-    "tf_minutes": 1,          # resample to N-min bars (1=no resample)
+    "tf_minutes": 3,          # resample to N-min bars (1=no resample)
 
     # Entry
     "ema_fast": 20,
@@ -30,7 +30,7 @@ STRATEGY = {
     "no_entry_after": dt.time(14, 0),
 
     # Stop
-    "stop_buffer": 0.3,       # ATR multiplier below touch low
+    "stop_buffer": 0.4,       # ATR multiplier below touch low
 
     # Exit: Lock + BE
     "lock_rr": 0.1,           # lock R:R target (0 = no lock)
@@ -42,8 +42,8 @@ STRATEGY = {
 
     # Exit: MFE gate
     "gate_bars": 3,           # check MFE after N bars (0 = off)
-    "gate_mfe": 0.3,          # minimum MFE to pass gate
-    "gate_tighten": -0.3,     # tighten stop to this R on fail
+    "gate_mfe": 0.2,          # minimum MFE to pass gate
+    "gate_tighten": -0.2,     # tighten stop to this R on fail
 
     # Position
     "max_hold_bars": 180,
@@ -54,11 +54,12 @@ STRATEGY = {
     # MNQ sizing
     "n_contracts": 2,
 
-    # DD control
-    "dd_threshold_r": 0,      # if trailing DD > this R, reduce contracts (0=off)
-    "dd_reduce_to": 1,        # reduce to N contracts when in DD
-    "dd_cooldown": 0,         # min trades before restoring
-    "dd_recovery_r": 0,       # DD must recover to < this R to restore
+    # DD control (dollar-based for prop firm)
+    "dd_pause_dollar": 0,     # if trailing DD > this $, pause trading (0=off)
+    "dd_reduce_dollar": 0,    # if trailing DD > this $, reduce to dd_reduce_to contracts (0=off)
+    "dd_reduce_to": 1,        # reduce to N contracts
+    "dd_cooldown": 20,        # min trades in reduced mode before restoring
+    "dd_recovery_dollar": 500, # DD must recover to < this $ to restore
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -151,17 +152,18 @@ def run(df_1min, s=None):
 
         # DD control: determine contract count
         nc = base_contracts
-        if s["dd_threshold_r"] > 0:
-            # Compute current DD in R (approximate: use avg risk)
-            dd_now = peak_pnl - cum_pnl
-            avg_risk_approx = a * s["stop_buffer"] * QQQ_TO_NQ * MNQ_PER_POINT * base_contracts
-            dd_r_approx = dd_now / avg_risk_approx if avg_risk_approx > 0 else 0
-            if not dd_reduced and dd_r_approx > s["dd_threshold_r"]:
+        dd_now = peak_pnl - cum_pnl
+        # Pause trading entirely if DD too deep
+        if s["dd_pause_dollar"] > 0 and dd_now > s["dd_pause_dollar"]:
+            bar += 1; continue
+        # Reduce contracts if DD exceeds threshold
+        if s["dd_reduce_dollar"] > 0:
+            if not dd_reduced and dd_now > s["dd_reduce_dollar"]:
                 dd_reduced = True; dd_trade_count = 0
             if dd_reduced:
                 nc = s["dd_reduce_to"]
                 dd_trade_count += 1
-                if dd_r_approx < s["dd_recovery_r"] and dd_trade_count >= s["dd_cooldown"]:
+                if dd_now < s["dd_recovery_dollar"] and dd_trade_count >= s["dd_cooldown"]:
                     dd_reduced = False; nc = base_contracts
 
         entry = close[bar]
