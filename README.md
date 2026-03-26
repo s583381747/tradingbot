@@ -2,7 +2,7 @@
 
 MNQ (Micro E-mini Nasdaq) 3分钟级别 EMA20 回调趋势跟随策略，专为 Topstep 50K 评估设计。
 
-**4年验证：OOS PF=2.21、$69/day、MaxDD=$613（远低于$2,000限制）。真实 Tradovate 滑点验证通过。**
+**真实NQ连续合约4年验证：PF=2.06、$68/day、MaxDD=$911。Topstep 50K 安全余量 $1,147。真实 Tradovate 滑点验证通过。**
 
 ---
 
@@ -58,35 +58,55 @@ Chandelier Trail（BE触发后激活）:
 | 止损滑点 | $1.00/笔 (2 ticks) | **45笔MNQ stop fill实测 mean=1.94 ticks** |
 | BE滑点 | $1.00/笔 | 保守估计 |
 
-### 核心回测结果（真实滑点模型）
+### 核心回测结果 — 真实NQ连续合约 (Panama Canal adjusted)
 
-| | IS (2024-2026) | OOS (2022-2024) |
-|--|----------------|-----------------|
-| **Net PF** | **2.415** | **2.209** |
-| **Daily $** | **+$91** | **+$66** |
-| **MaxDD** | **$898** | **$613** |
-| Trades | 2,827 | 2,833 |
-| Trades/day | 5.6 | 5.6 |
-| 5R+ | 37 | 34 |
-| Cost/Risk | 6.2% | 7.8% |
-| IS/OOS PF ratio | — | **91.5%** |
+| | IS (2024-2026) | OOS (2022-2023) | 4Y Full |
+|--|----------------|-----------------|---------|
+| **Net PF** | **2.137** | **1.967** | **2.060** |
+| **Daily $** | **+$76** | **+$60** | **+$68** |
+| **MaxDD** | **$911** | **$853** | **$911** |
+| Trades | 3,238 | 2,832 | 6,071 |
+| Trades/day | 5.6 | 5.5 | 5.5 |
+| 5R+ | 33 | 24 | 57 |
+| Cost/Risk | 6.3% | 7.4% | — |
 
-### Exit Breakdown
+### 年度表现（Real NQ，每年盈利）
+
+| 年度 | PF | PnL | 交易 |
+|------|-----|------|------|
+| 2022 | 2.018 | +$19,787 | 1,422 |
+| 2023 | 1.888 | +$11,036 | 1,410 |
+| 2024 | 1.980 | +$15,632 | 1,452 |
+| 2025 | 1.960 | +$17,115 | 1,440 |
+| 2026 (Q1) | 3.313 | +$11,119 | 347 |
+
+### QQQ×40 Proxy vs Real NQ
+
+| 指标 | QQQ×40 | NQ Real | Delta |
+|------|--------|---------|-------|
+| OOS PF | 2.209 | 1.967 | -11% |
+| OOS $/d | +$66 | +$60 | -10% |
+| OOS DD | $613 | $853 | +39% |
+| OOS 5R+ | 34 | 24 | -29% |
+
+QQQ×40 proxy 高估了约11%。NQ 期货有更宽的微观结构、roll 调整影响、不同的成交量分布。
+
+### Exit Breakdown (Real NQ)
 
 | Exit Type | IS | OOS | 含义 |
 |-----------|-----|-----|------|
-| stop | 1,069 (38%) | 1,016 (36%) | 完整止损 |
-| be | 1,493 (53%) | 1,563 (55%) | BE触发后止损 |
-| trail | 265 (9%) | 254 (9%) | Chandelier追踪止盈 |
+| stop | 1,173 (36%) | 1,030 (36%) | 完整止损 |
+| be | 1,804 (56%) | 1,557 (55%) | BE触发后止损 |
+| trail | 261 (8%) | 245 (9%) | Chandelier追踪止盈 |
 
-### Prop Firm 适配（Topstep 50K）
+### Prop Firm 适配（Topstep 50K）— Real NQ 数据
 
 | 指标 | 值 | Topstep限制 | 状态 |
 |------|-----|------------|------|
-| MaxDD | $898 | $2,000 | ✅ 安全余量 $1,102 |
-| 日均盈利 | $69 OOS | 目标$3,000 | ✅ ~44交易日达标 |
-| 日内最大亏损 | ~2R = ~$160 | $2,000/day | ✅ |
-| 一致性 | 5.6笔/天稳定 | 需要 | ✅ |
+| MaxDD | $911 (NQ real) | $2,000 | ✅ 安全余量 $1,089 |
+| 日均盈利 | $60 OOS | 目标$3,000 | ✅ ~50交易日达标 |
+| 日内最大亏损 | ~2R = ~$180 | $2,000/day | ✅ |
+| 一致性 | 5.5笔/天稳定 | 需要 | ✅ |
 
 ---
 
@@ -185,7 +205,8 @@ STRATEGY = {
 
 | 文件 | 用途 |
 |------|------|
-| `strategy_mnq.py` | **核心** — MNQ prop firm 策略 + 回测引擎 |
+| `strategy_mnq.py` | **核心** — MNQ prop firm 策略 + QQQ回测引擎 |
+| `run_nq_backtest.py` | **真实NQ数据回测** — NQ连续合约 vs QQQ×40对比 |
 | `strategy_final.py` | 原始 QQQ Plan G 策略（参考） |
 | `entry_signal.py` | 共享入场信号模块 |
 
@@ -214,8 +235,10 @@ STRATEGY = {
 
 | 文件 | 用途 |
 |------|------|
-| `data/QQQ_1Min_Polygon_2y_clean.csv` | IS 数据 (2024-2026) |
-| `data/QQQ_1Min_Barchart_2y_2022-2024_clean.csv` | OOS 数据 (2022-2024) |
+| `data/barchart_nq/NQ_1min_continuous_RTH.csv` | **真实NQ连续合约** RTH 1min (2021-2026, 417K bars) |
+| `data/barchart_nq/NQ_1min_continuous_full.csv` | NQ连续合约含Globex (80MB) |
+| `data/QQQ_1Min_Polygon_2y_clean.csv` | QQQ IS 数据 (2024-2026, proxy) |
+| `data/QQQ_1Min_Barchart_2y_2022-2024_clean.csv` | QQQ OOS 数据 (2022-2024, proxy) |
 
 ---
 
@@ -248,4 +271,4 @@ python3 exp_vol_sr_mnq.py
 
 ---
 
-*最后验证: 2026-03-26 | MNQ v8 | OOS PF=2.21, $69/day, MaxDD=$613, 真实滑点验证通过, 9个实验闭环*
+*最后验证: 2026-03-26 | MNQ v8 | Real NQ: 4Y PF=2.06, $68/day, MaxDD=$911 | Topstep 50K: ✅ PASS (safety $1,089) | 真实滑点验证通过 | 10个实验闭环*
