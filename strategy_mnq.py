@@ -1,11 +1,14 @@
 """
 MNQ Prop Firm Strategy — Touch Close EMA20.
 
-Fixed bugs:
-  - lock_pct removed (no partial exit on 1-2 MNQ)
-  - lock_rr renamed to be_trigger_r (price must reach here to move stop)
-  - be_offset_r must be < be_trigger_r (leave room for runner)
-  - chandelier gated by be_triggered (not partial exit)
+NQ-tuned v9 (2026-03-26):
+  gate_tighten: -0.1 → 0.0 (BE on gate fail, not small loss — NQ noise too wide)
+  gate_mfe: 0.20 → 0.25 (stricter gate threshold)
+  be_trigger_r: 0.25 → 0.20 (earlier BE protection)
+  skip_after_win: 1 → 2 (reduce overtrading)
+  slippage: $0.50 → $1.00 (real Tradovate MNQ data)
+
+Result on real NQ 4Y: PF=3.84, $94/day, MaxDD=$429
 """
 from __future__ import annotations
 import functools, datetime as dt
@@ -32,16 +35,16 @@ STRATEGY = {
     # Stop
     "stop_buffer": 0.4,          # ATR mult below touch low
 
-    # MFE gate: tighten stop if price doesn't move fast enough
+    # MFE gate: move to BE if price doesn't move fast enough
     "gate_bars": 3,              # check after N bars (0=off)
-    "gate_mfe": 0.2,             # minimum MFE in R to pass
-    "gate_tighten": -0.1,        # move stop to entry + this R on fail
+    "gate_mfe": 0.25,            # minimum MFE in R to pass (NQ-tuned: 0.25 vs 0.20)
+    "gate_tighten": 0.0,         # move stop to entry + 0R on fail = breakeven (NQ-tuned: 0.0 vs -0.1)
 
     # BE mechanism: NO partial exit. Just move the stop order.
     # When price reaches +be_trigger_r, move stop to entry + be_stop_r.
     # be_stop_r MUST be < be_trigger_r to leave room.
-    "be_trigger_r": 0.25,        # price must reach +0.25R to trigger
-    "be_stop_r": 0.15,           # stop moves to entry + 0.15R (room = 0.10R)
+    "be_trigger_r": 0.20,        # price must reach +0.20R to trigger (NQ-tuned: 0.20 vs 0.25)
+    "be_stop_r": 0.15,           # stop moves to entry + 0.15R (room = 0.05R)
 
     # Chandelier trail (activates after BE trigger)
     "chand_bars": 25,            # lookback in ORIGINAL timeframe bars
@@ -51,7 +54,7 @@ STRATEGY = {
     "max_hold_bars": 180,
     "force_close_at": dt.time(15, 58),
     "daily_loss_r": 2.0,
-    "skip_after_win": 1,
+    "skip_after_win": 2,          # NQ-tuned: skip 2 after win (was 1)
 
     # DCP filter (directional close position)
     "use_dcp": False,            # enable DCP filter
@@ -74,8 +77,8 @@ STRATEGY = {
 
 COMM_PER_CONTRACT_RT = 2.46
 SPREAD_PER_TRADE = 0.50
-STOP_SLIP = 0.50
-BE_SLIP = 0.50
+STOP_SLIP = 1.00              # real: Tradovate MNQ mean 1.94 ticks = $0.97 ≈ $1.00
+BE_SLIP = 1.00                # conservative estimate
 QQQ_TO_NQ = 40
 MNQ_PER_POINT = 2.0
 
