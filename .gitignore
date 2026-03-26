@@ -36,3 +36,4 @@ results.tsv
 
 # OS
 .DS_Store
+data/

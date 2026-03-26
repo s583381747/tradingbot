@@ -1,0 +1,1 @@
+var r={s:[],i:[],b:[]}; document.querySelectorAll('select').forEach(function(s){r.s.push({id:s.id,name:s.name})}); document.querySelectorAll('input').forEach(function(i){r.i.push({id:i.id,name:i.name,type:i.type,val:i.value})}); document.querySelectorAll('button').forEach(function(b){r.b.push({text:b.textContent.trim().substring(0,40)})}); console.log(JSON.stringify(r));

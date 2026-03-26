@@ -1,0 +1,1 @@
+var d=[]; document.querySelectorAll('a, div, span, button').forEach(function(e){var t=e.textContent.trim().substring(0,50); if(t.toLowerCase().indexOf('download')>-1 || e.className.toString().indexOf('download')>-1){d.push({tag:e.tagName,text:t,cls:e.className.toString().substring(0,80),href:e.href||'',onclick:e.onclick?'yes':'no'})}}); console.log(JSON.stringify(d));
