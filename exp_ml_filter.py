@@ -438,7 +438,7 @@ def calc_stats(trades):
     gl = abs(tdf.loc[tdf["net_pnl"] <= 0, "net_pnl"].sum())
     return {
         "pf": round(gw / gl, 3) if gl > 0 else 0,
-        "dd": round(max(0, tdf["net_pnl"].cumsum().cummax() - tdf["net_pnl"].cumsum()).max(), 0),
+        "dd": round((tdf["net_pnl"].cumsum().cummax() - tdf["net_pnl"].cumsum()).clip(lower=0).max(), 0),
         "pnl": round(tdf["net_pnl"].sum(), 0),
         "n": len(tdf),
     }

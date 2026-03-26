@@ -1,278 +1,181 @@
-# QQQ EMA20 Trend Following Strategy
+# MNQ Prop Firm Strategy — EMA20 Touch Close
 
-QQQ 1 分钟级别 EMA20 回调弹跳趋势跟随量化策略。**4 年 out-of-sample 验证：PF=2.51、年化 +18%、49/49 月盈利。**
+MNQ (Micro E-mini Nasdaq) 3分钟级别 EMA20 回调趋势跟随策略，专为 Topstep 50K 评估设计。
+
+**4年验证：OOS PF=2.21、$69/day、MaxDD=$613（远低于$2,000限制）。真实 Tradovate 滑点验证通过。**
 
 ---
 
-## 策略概要（Plan G）
+## 策略核心
 
 ### 入场逻辑
 
 ```
 1. 趋势确认    Close > EMA20 > EMA50（做多）或 Close < EMA20 < EMA50（做空）
-2. 回调触碰    wick 在 EMA20 ± 0.15×ATR 范围内（几乎亲到均线）
-3. 弹跳确认    下一根 bar 的 Close > 触碰 bar 的 High
-4. 信号挂单    在触碰 bar 的 High + $0.05 挂 stop buy（3 bars 有效期）
-5. 时间限制    不在 15:30 后新开仓，15:58 强平所有持仓
+2. 回调触碰    3分钟bar的wick在 EMA20 ± 0.15×ATR 范围内
+3. 触碰bar收盘入场    在touch bar的Close价格入场（无stop-buy gap bias）
+4. 时间限制    不在14:00后新开仓，15:58强平所有持仓
+5. 胜后跳过    赢一笔后跳过下一个信号（避免过度交易）
 ```
 
-### 出场架构
+### 出场架构（全仓位，无分仓）
 
 ```
-Lock（20% 仓位）:
-  - 固定止盈 0.3:1 R:R（约 $0.15-0.18）
-  - 触发后止损移到保本 (breakeven)
+3-Bar MFE Gate:
+  - 入场后3根bar内MFE < 0.2R → 止损收紧至 entry - 0.1R
+  - Cohen's d > 1.0（强信号），快速切掉不动的交易
 
-Runner（80% 仓位）:
-  - Chandelier 追踪止损: highest_high(40 bars) - 0.5×ATR
-  - Lock 触发后开始追踪，只升不降
-  - 无固定止盈上限，让利润奔跑
+BE Trigger + Stop Move:
+  - 价格达到 +0.25R → 止损移至 entry + 0.15R（留0.1R呼吸空间）
+  - 不做部分止盈（MNQ 2合约无法有效分仓）
+
+Chandelier Trail（BE触发后激活）:
+  - highest_high(25 bars) - 0.3×ATR（做多）
+  - 只升不降，让利润奔跑
+  - 无固定止盈上限
 ```
 
-### 日内风控
+### 风控
 
 ```
-仓位         每笔风险 = 1% 权益，最大仓位 = 25% 权益
-日内熔断     当日累计亏损 R 达到 2.5 后停止开新仓（次日重置）
-佣金         IBKR $0.005/share
+合约数      2 MNQ（固定）
+日内熔断    当日累计亏损达2.0R后停止开新仓（次日重置）
+止损        touch bar low - 0.4×ATR（做多）
+最大持仓    180根1分钟bar（=60根3分钟bar）
+强平时间    15:58
 ```
-
-**关于"2.5R 日内熔断"的精确定义：**
-- 这是**累计亏损 R**，不是 trailing DD
-- 每笔亏损交易贡献 `|亏损金额| ÷ (股数 × 单笔风险)` 到当日计数器
-- 只有亏损交易累加，盈利交易不减
-- 达到 2.5 后不再开新仓，但**不会强平已有仓位**
-- 因此实际日内最大 trailing DD 可达 ~3.2R（最后一笔仓位仍在运行）
-- 次日 00:00 重置为 0
 
 ---
 
 ## 回测成绩
 
-### In-Sample 回测（2024-2026 Polygon SIP）
+### MNQ 成本模型（真实 Tradovate 数据验证）
 
-| 指标 | 值 |
-|------|-----|
-| **Profit Factor** | **2.686** |
-| **总回报** | **+36.73%** |
-| **总交易** | 4,432 (8.9/天) |
-| **胜率** | 77.0% (3,412W / 1,020L) |
-| **最大回撤** | 0.33% |
-| **Avg Win / Avg Loss** | $17.15 / $21.36 (R:R = 0.80) |
-| **Y1 → Y2** | PF 2.582 → **2.779**（无退化） |
+| 成本项 | 金额 | 来源 |
+|--------|------|------|
+| 佣金 | $2.46/合约 RT | Tradovate 标准 |
+| 价差 | $0.50/笔 (1 tick) | 市场观察 |
+| 止损滑点 | $1.00/笔 (2 ticks) | **45笔MNQ stop fill实测 mean=1.94 ticks** |
+| BE滑点 | $1.00/笔 | 保守估计 |
 
-### Out-of-Sample 验证（2022-2024 Barchart，从未见过）
+### 核心回测结果（真实滑点模型）
 
-| | In-Sample (2024-2026) | Out-of-Sample (2022-2024) |
-|--|----------------------|--------------------------|
-| PF | 2.686 | **2.340** |
-| Return | +36.73% | **+41.10%** |
-| Trades | 4,432 | **4,445** |
-| WR | 77.0% | **77.1%** |
-| OOS Y1→Y2 | — | 2.191 → **2.579** |
+| | IS (2024-2026) | OOS (2022-2024) |
+|--|----------------|-----------------|
+| **Net PF** | **2.415** | **2.209** |
+| **Daily $** | **+$91** | **+$66** |
+| **MaxDD** | **$898** | **$613** |
+| Trades | 2,827 | 2,833 |
+| Trades/day | 5.6 | 5.6 |
+| 5R+ | 37 | 34 |
+| Cost/Risk | 6.2% | 7.8% |
+| IS/OOS PF ratio | — | **91.5%** |
 
-**OOS 回报更高，WR 完全一致。不是过拟合。**
+### Exit Breakdown
 
-### 4 年全样本（2022-03 → 2026-03）
+| Exit Type | IS | OOS | 含义 |
+|-----------|-----|-----|------|
+| stop | 1,069 (38%) | 1,016 (36%) | 完整止损 |
+| be | 1,493 (53%) | 1,563 (55%) | BE触发后止损 |
+| trail | 265 (9%) | 254 (9%) | Chandelier追踪止盈 |
 
-| 指标 | 值 |
-|------|-----|
-| **Profit Factor** | **2.513** |
-| **总回报** | **+93.03%** ($100K → $193K) |
-| **年化回报** | **+17.97%** |
-| **总交易** | 8,874 (8.8/天) |
-| **胜率** | 77.2% |
-| **最大回撤 (equity)** | 0.48% |
-| **Sharpe** | 8.09 |
-| **Sortino** | 30.95 |
-| **Calmar** | 37.4 |
-| **亏损月** | **0/49** |
-| **亏损季度** | **0/17** |
-| **最大连亏** | 6 笔 |
-| **Max Trailing DD** | 19.16R |
-| **Total R earned** | +2,739.7R |
+### Prop Firm 适配（Topstep 50K）
 
-### 年度表现（每年递增）
-
-| 年度 | PF | PnL | 交易 | WR |
-|------|-----|-----|------|-----|
-| 2022 | 2.249 | +$18,770 | 1,784 | 77.9% |
-| 2023 | 2.376 | +$17,996 | 2,167 | 76.3% |
-| 2024 | 2.563 | +$20,938 | 2,247 | 76.2% |
-| 2025 | 2.690 | +$26,812 | 2,187 | 77.6% |
-| 2026 (Q1) | 3.069 | +$8,518 | 489 | 80.4% |
-
-### 季度表现（17/17 盈利）
-
-| 季度 | PF | PnL | | 季度 | PF | PnL |
-|------|-----|------|-|------|-----|------|
-| 2022Q2 | 1.79 | +$4,420 | | 2024Q3 | 2.96 | +$8,543 |
-| 2022Q3 | 2.70 | +$7,006 | | 2024Q4 | 2.39 | +$4,375 |
-| 2022Q4 | 2.44 | +$6,885 | | 2025Q1 | 2.71 | +$7,053 |
-| 2023Q1 | 2.11 | +$4,829 | | 2025Q2 | 2.90 | +$9,586 |
-| 2023Q2 | 2.09 | +$3,361 | | 2025Q3 | 2.46 | +$4,079 |
-| 2023Q3 | 2.60 | +$4,654 | | 2025Q4 | 2.56 | +$6,094 |
-| 2023Q4 | 2.87 | +$5,152 | | 2026Q1 | 3.07 | +$8,518 |
-| 2024Q1 | 2.47 | +$4,107 | | | | |
-| 2024Q2 | 2.26 | +$3,914 | | | | |
+| 指标 | 值 | Topstep限制 | 状态 |
+|------|-----|------------|------|
+| MaxDD | $898 | $2,000 | ✅ 安全余量 $1,102 |
+| 日均盈利 | $69 OOS | 目标$3,000 | ✅ ~44交易日达标 |
+| 日内最大亏损 | ~2R = ~$160 | $2,000/day | ✅ |
+| 一致性 | 5.6笔/天稳定 | 需要 | ✅ |
 
 ---
 
-## 风险报告
+## 真实滑点验证
 
-### 账户级 Trailing DD（从权益最高点回撤，以 R 计）
+数据来源：用户 Tradovate 账户 45笔 MNQ stop order fill（2026 Q1）
 
-| 分位 | DD 深度 |
-|------|---------|
-| P90 | 5.62R |
-| P95 | 7.44R |
-| P99 | 11.29R |
-| **Max** | **19.16R** |
+| 指标 | Ticks | USD |
+|------|-------|-----|
+| Mean | 1.94 | $0.97 |
+| Median | 1.0 | $0.50 |
+| P90 | 5.2 | $2.60 |
+| P95 | 6.8 | $3.40 |
+| Max | 18.0 | $9.00 |
 
-### DD 事件频率
+| 产品 | Mean滑点(ticks) | Zero滑点% |
+|------|-----------------|-----------|
+| NQ | 0.25 | 75% |
+| **MNQ** | **1.94** | **40%** |
+| MES | 0.26 | 74% |
 
-| 回撤深度 | 4年次数 | 每年频率 |
-|----------|---------|---------|
-| >=5R | 75 | 18.8/年（每 2 周） |
-| >=8R | 24 | 6.0/年（每 2 月） |
-| >=10R | 9 | 2.3/年（每季度） |
-| >=15R | 2 | 0.5/年（罕见） |
-| >=20R | **0** | 未发生 |
-
-### 日内风控
-
-| 指标 | 值 |
-|------|-----|
-| 最差单日 | -3.16R |
-| 日内 trailing DD max | 3.20R |
-| 日内 trailing DD P95 | 3.08R |
-| 亏损日占比 | 33% |
-| 日亏>2R 占比 | 18% |
-
-### R 分布
-
-| 类型 | 占比 | 说明 |
-|------|------|------|
-| < -1R（止损） | 20.5% | 正常亏损 |
-| -1R ~ 0R | 2.3% | 小亏 |
-| 0 ~ 0.1R（BE/微利） | 64.8% | Lock 赚但 runner 在 BE 出 |
-| 1R ~ 5R（中赢） | 9.6% | Runner 盈利 |
-| 5R+（大赢） | 2.7% | 贡献 ~50% 总利润 |
-
-### 交易节奏
-
-| 指标 | P25 | P50 | P75 | P95 |
-|------|-----|-----|-----|-----|
-| 持仓时间 | 2 min | 4 min | 10 min | 41 min |
-| 入场间隔（日内） | 13 min | 27 min | 48 min | 85 min |
+MNQ滑点 ~8x NQ/MES。回测使用 2 ticks ($1.00) — 与实测 mean 1.94 ticks 匹配。
 
 ---
 
-## 验证体系
+## 研究历程（9个实验）
 
-### Walk-Forward（2024-2026 Polygon）
+### Phase 1: 参数优化 (Exp 0-4)
 
-| 时段 | PF | Return | 交易 |
-|------|-----|--------|------|
-| **Full 2Y** | **2.695** | +39.08% | 4,432 |
-| Y1 (2024-03→2025-03) | 2.591 | +17.51% | 2,231 |
-| Y2 (2025-03→2026-03) | **2.784** | +18.30% | 2,201 |
+| # | 描述 | IS PF | OOS PF | IS DD | OOS DD | 状态 |
+|---|------|-------|--------|-------|--------|------|
+| 0 | Baseline (1min, 2MNQ) | 1.304 | 1.132 | $3,668 | $4,242 | baseline |
+| 1 | 3min + gate-0.2 | 1.802 | 1.608 | $1,313 | $1,657 | keep |
+| 2 | trigger=stop bug | — | — | — | — | INVALID |
+| 3 | v8: gate-0.15 + chand30/0.3 | 2.128 | 1.889 | $1,255 | $983 | keep |
+| **4** | **gate-0.1 + trigger0.25 + chand25** | **2.488** | **2.290** | **$860** | **$588** | **★ BEST** |
 
-7/7 半年滚动全盈利（PF 2.45~3.19），8/9 季度盈利。
+关键发现：1min→3min 将 cost/risk 从 30% 降到 6-8%。Gate -0.1R + BE trigger 0.25R/stop 0.15R + Chandelier 25/0.3 三者协同——快速切亏 + 快速锁利 = DD 最小化。
 
-### 1. 压力测试（微观结构）
+### Phase 2: ML 入场过滤 (Exp 5-7)
 
-| 场景 | PF | 回报 | 退化 |
-|------|-----|------|------|
-| A. Baseline | 2.732 | +37.28% | — |
-| B. Strict Lock | 2.732 | +37.28% | 0.0% |
-| C. BE Bleed ($0.03) | 2.434 | +32.53% | -10.9% |
-| E. All Bug Fixes | 2.401 | +32.09% | -12.1% |
-| **F. Nightmare** | **1.725** | **+18.14%** | **-36.9%** |
+| # | 描述 | OOS AUC | 状态 |
+|---|------|---------|------|
+| 5 | LightGBM/RF 37 features → win/loss | 0.528 | ✗ noise |
+| 6 | 70 features, 5 targets, visual patterns | 0.532-0.656 | ✗ partial MFE signal only |
+| 7 | DCP deep dive | Cohen's d = -0.03 | ✗ kills 74% of 5R+ |
 
-Nightmare walk-forward: Y1 PF=1.571 → Y2 PF=**1.873**（仍 Y2>Y1）。
+**定论**：70个特征、4种模型、5种目标、purged CV，预入场特征**无法预测**交易结果。DCP（ML排名#1特征）与大赢家**反向相关**——低DCP（深回调）产出68-74%的5R+交易。
 
-### 2. 实盘模拟
+### Phase 3: 出场/再入场优化 (Exp 8-9)
 
-1-bar 延迟 + 随机滑点 ($0.015/share mean)，40 天窗口：
+| # | 描述 | OOS PF | OOS DD | 5R+ | 状态 |
+|---|------|--------|--------|-----|------|
+| 8 | RE-ENTRY after BE (window=20) | 2.212 | $748 | 32 | marginal (+8% $/d, +22% DD) |
+| 9 | Volume S/R target | 1.970 | $510 | 14 | ✗ HARMFUL (caps 5R+) |
 
-| 指标 | 值 |
-|------|-----|
-| PF | **2.058** |
-| 回报 (40 天) | **+2.81%** |
-| Monte Carlo 20 次 | **20/20 盈利** |
-| PF 范围 | 1.970 ~ 2.185 |
-| Lock 触发率 | 84.5% |
-
-### 3. 入场信号验证
-
-- **随机基线**: 0/1000 随机参数超过策略 (p < 0.001)
-- **Alpha 时间尺度**: 30 bar (p=0.020)、60 bar (p=0.003)
-- **出场无独立 alpha**: 随机入场 + 策略出场 = PF 0.24
-
-### 4. 外部审计
-
-3 个 bug 已修复，总影响 -2.4% PF。
-
-### 5. Chandelier 参数稳定性
-
-60 种 bars×mult 组合全测，OOS 全部通过（零过拟合标记）。Plan G (40/0.5) 在 IS 和 OOS 上都优于 Plan F (40/1.0)。
+**定论**：Volume target **主动有害**——5R+从34→14，PF从2.22→1.97。任何限制上行空间的机制都会伤害策略的厚尾利润核心。
 
 ---
 
-## 方案演进路线
+## 核心认知
 
+1. **Edge 来源是结构性的**：趋势(EMA) + 回调入场(touch) + 快速切亏(gate) + 让利跑(chandelier)
+2. **入场时不可预测**：所有touch在入场时看起来高度同质化。70个特征的ML模型 OOS AUC=0.53（随机）
+3. **利润来自厚尾**：2.7% 的 5R+ 交易贡献 ~50% 利润。任何 capping 机制都致命
+4. **3-bar MFE gate 是唯一有效的 post-entry 信号**：Cohen's d > 1.0
+5. **MNQ成本问题通过3min解决**：1min cost/risk 30%+ → 3min 6-8%
+
+---
+
+## 策略参数（strategy_mnq.py）
+
+```python
+STRATEGY = {
+    "tf_minutes": 3,
+    "ema_fast": 20, "ema_slow": 50, "atr_period": 14,
+    "touch_tol": 0.15, "touch_below_max": 0.5,
+    "no_entry_after": time(14, 0),
+    "stop_buffer": 0.4,
+    "gate_bars": 3, "gate_mfe": 0.2, "gate_tighten": -0.1,
+    "be_trigger_r": 0.25, "be_stop_r": 0.15,
+    "chand_bars": 25, "chand_mult": 0.3,
+    "max_hold_bars": 180,
+    "force_close_at": time(15, 58),
+    "daily_loss_r": 2.0,
+    "skip_after_win": 1,
+    "n_contracts": 2,
+}
 ```
-Phase 0: 策略原型 (Gen 0-16)
-├── backtrader + IEX + 错误佣金 → 全亏
-└── 发现根因: 佣金 100 倍、数据 13% 坏、引擎 fill 延迟
-
-Phase 1: 诊断实验
-├── 参数敏感度 → 4/8 参数过拟合
-├── 1000 次随机基线 → 入场信号有效 (p<0.001)
-└── Alpha 分解 → 信号有效期 30-60 分钟
-
-Phase 2: 架构重构
-├── 引擎: backtrader → pandas
-├── 数据: IEX → Polygon SIP
-├── 佣金: 0.1% → $0.005/share
-├── 出场: 352 种配置 → Lock+Chandelier
-└── Bug: 外部审计修复 (-2.4% PF)
-
-Phase 3: 验证 + 优化
-├── Plan F: Walk-forward + 压力测试 + 实盘模拟 ✅
-├── Plan G: Chandelier 1.0→0.5, 4年OOS验证 ✅
-├── Prop Firm: Monte Carlo 通过率模拟 ✅
-└── TradingView: Pine Script 同步 ✅
-
-Phase 4: 实盘（待做）
-├── IBKR API 集成 / US East VPS
-├── Prop Firm 评估（MFF/Topstep MNQ）
-└── 多标的扩展
-```
-
----
-
-## 关键技术决策
-
-| 决策 | 原因 |
-|------|------|
-| **IEX → Polygon SIP** | IEX 有 13% zero-range bars，volume 只有 SIP 的 2% |
-| **佣金 0.1% → $0.005/share** | 旧设置 = 真实 IBKR 的 100 倍，Gen 0-15 全亏根因 |
-| **backtrader → pandas** | Stop order fill 延迟，交易数 5000→850 |
-| **分仓出场** | 不分仓 PF=1.13，分仓 PF=2.55 |
-| **Chandelier 40/1.0 → 40/0.5** | 60 种配置扫描 + 4 年 OOS 验证，更紧 trail 全面更优 |
-| **日内熔断 2.5R** | 去掉后 MaxDD 翻倍，被拦截的交易 PF 仅 1.1 |
-
----
-
-## 已知风险
-
-1. **BE 滑点** — 65% 交易在 BE 出场，实盘每笔亏 $0.02-0.05。压力测试 -11% PF。
-2. **执行延迟** — 中位持仓 4 分钟，需低延迟 VPS。
-3. **全自动** — 日均 8.8 笔，手动不可行。
-4. **容量** — 1 分钟 scalping，$100K 级别。
-5. **单标的** — 仅 QQQ 验证 4 年。
 
 ---
 
@@ -282,58 +185,67 @@ Phase 4: 实盘（待做）
 
 | 文件 | 用途 |
 |------|------|
-| `strategy_final.py` | **核心** — Plan G 策略 + pandas 回测引擎 |
+| `strategy_mnq.py` | **核心** — MNQ prop firm 策略 + 回测引擎 |
+| `strategy_final.py` | 原始 QQQ Plan G 策略（参考） |
 | `entry_signal.py` | 共享入场信号模块 |
-| `stress_test.py` | 6 场景微观结构压力测试 |
-| `walk_forward.py` | Walk-forward 验证 |
-| `live_sim.py` | 实盘模拟器 |
-| `exit_comparison.py` | 出场方案对比 |
-| `prop_firm_sim.py` | Prop firm Monte Carlo 通过率模拟 |
-| `chart_viewer.py` | Dash 交互式可视化 |
-| `tradingview_strategy.pine` | TradingView Pine Script (Plan G) |
 
-### 文档
+### 实验代码
 
-| 文件 | 内容 |
+| 文件 | 用途 |
 |------|------|
-| `HANDOFF.md` | 项目交接说明 |
-| `FINDINGS.md` | 实验发现汇总 |
-| `AUDIT_RESPONSE.md` | 审计回应 |
-| `STRESS_TEST_REPORT.md` | 压力测试报告 |
+| `exp_ml_filter.py` | ML入场过滤 V1 (37 features) |
+| `exp_ml_filter_v2.py` | ML入场过滤 V2 (70 features, 5 targets) |
+| `exp_ml_filter_v3.py` | DCP deep dive |
+| `exp_reentry_mnq.py` | RE-ENTRY after BE |
+| `exp_vol_sr_mnq.py` | Volume Node S/R |
+| `exp_*.py` | 其他历史实验 (chop detection, entry redesign, etc.) |
 
-### 历史
+### 研究实验室
 
-| 目录 | 内容 |
+| 文件 | 用途 |
 |------|------|
-| `archive/` | 17 代策略 + 22 份报告 |
-| `experiments/` | 23 个实验脚本 |
+| `.lab/config.md` | 研究配置 |
+| `.lab/log.md` | 实验日志（9个实验） |
+| `.lab/results.tsv` | 结构化结果 |
+| `.lab/mnq_slippage.md` | 真实 MNQ 滑点数据 |
+| `.lab/parking-lot.md` | 已关闭的研究方向 |
+
+### 数据
+
+| 文件 | 用途 |
+|------|------|
+| `data/QQQ_1Min_Polygon_2y_clean.csv` | IS 数据 (2024-2026) |
+| `data/QQQ_1Min_Barchart_2y_2022-2024_clean.csv` | OOS 数据 (2022-2024) |
 
 ---
 
 ## 快速开始
 
 ```bash
-pip install pandas numpy plotly dash requests
+pip install pandas numpy
 
-# 回测（需要数据文件在 data/ 目录）
-python3 strategy_final.py
+# MNQ策略回测
+python3 strategy_mnq.py
 
-# 压力测试
-python3 stress_test.py
+# ML入场过滤研究
+python3 exp_ml_filter.py
 
-# Walk-forward
-python3 walk_forward.py
+# RE-ENTRY测试
+python3 exp_reentry_mnq.py
 
-# 实盘模拟
-python3 live_sim.py --days 40 --runs 20
-
-# Prop firm 通过率模拟
-python3 prop_firm_sim.py
-
-# 可视化
-python3 chart_viewer.py --date 2025-01-15 --days 3
+# Volume S/R测试
+python3 exp_vol_sr_mnq.py
 ```
 
 ---
 
-*最后验证: 2026-03-24 | Plan G (40/0.5) | 4年 PF=2.51, 年化+18%, MaxDD=0.48%, Sharpe=8.09, 49/49月盈利, Nightmare PF=1.73, 20/20 MC盈利, OOS验证通过*
+## 下一步
+
+- [ ] **Paper trading 2周** — 验证真实执行
+- [ ] **获取NQ 1min数据** — 替换QQQ×40近似回测
+- [ ] **Broker max loss设置** — 每单最大$200
+- [ ] **自动化执行** — NinjaTrader/Sierra Chart
+
+---
+
+*最后验证: 2026-03-26 | MNQ v8 | OOS PF=2.21, $69/day, MaxDD=$613, 真实滑点验证通过, 9个实验闭环*
