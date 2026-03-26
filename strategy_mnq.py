@@ -1,11 +1,11 @@
 """
 MNQ Prop Firm Strategy — Touch Close EMA20.
 
-v10 (2026-03-26) — audit-fixed cost model:
-  - Spread/slippage now PER CONTRACT (was flat per trade — bug)
-  - Stop fill uses worst-case: min(stop_price, open[bi]) for gap-through
-  - Reverted to v8 params (gate=-0.1) pending re-validation with correct costs
-  - gate=0.0 change is directionally correct but needs re-sweep with fixed costs
+v11 (2026-03-26) — 10min bar + audit-fixed cost model:
+  - tf: 3min → 10min (cost/risk 8.4% → 4.4%, PF 1.19 → 1.54, DD $4.6K → $1.4K)
+  - gate_tighten: 0.0 (BE on gate fail — validated on NQ 7/7 walk-forward)
+  - Spread/slippage PER CONTRACT (audit fix)
+  - Stop fill models gap-through via Open price (audit fix)
 """
 from __future__ import annotations
 import functools, datetime as dt
@@ -22,7 +22,7 @@ OOS_PATH = "data/QQQ_1Min_Barchart_2y_2022-2024_clean.csv"
 
 STRATEGY = {
     # Timeframe
-    "tf_minutes": 3,
+    "tf_minutes": 10,
 
     # Entry
     "ema_fast": 20, "ema_slow": 50, "atr_period": 14,
@@ -34,14 +34,12 @@ STRATEGY = {
 
     # MFE gate: move to BE if price doesn't move fast enough
     "gate_bars": 3,              # check after N bars (0=off)
-    "gate_mfe": 0.25,            # minimum MFE in R to pass (NQ-tuned: 0.25 vs 0.20)
-    "gate_tighten": 0.0,         # move stop to entry + 0R on fail = breakeven (NQ-tuned: 0.0 vs -0.1)
+    "gate_mfe": 0.2,             # minimum MFE in R to pass
+    "gate_tighten": 0.0,         # BE on gate fail (validated: 7/7 walk-forward on NQ)
 
     # BE mechanism: NO partial exit. Just move the stop order.
-    # When price reaches +be_trigger_r, move stop to entry + be_stop_r.
-    # be_stop_r MUST be < be_trigger_r to leave room.
-    "be_trigger_r": 0.20,        # price must reach +0.20R to trigger (NQ-tuned: 0.20 vs 0.25)
-    "be_stop_r": 0.15,           # stop moves to entry + 0.15R (room = 0.05R)
+    "be_trigger_r": 0.25,        # price must reach +0.25R to trigger
+    "be_stop_r": 0.15,           # stop moves to entry + 0.15R (room = 0.10R)
 
     # Chandelier trail (activates after BE trigger)
     "chand_bars": 25,            # lookback in ORIGINAL timeframe bars
@@ -51,7 +49,7 @@ STRATEGY = {
     "max_hold_bars": 180,
     "force_close_at": dt.time(15, 58),
     "daily_loss_r": 2.0,
-    "skip_after_win": 2,          # NQ-tuned: skip 2 after win (was 1)
+    "skip_after_win": 1,
 
     # DCP filter (directional close position)
     "use_dcp": False,            # enable DCP filter

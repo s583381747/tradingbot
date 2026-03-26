@@ -18,12 +18,12 @@ QQQ_OOS_PATH = "data/QQQ_1Min_Barchart_2y_2022-2024_clean.csv"
 
 # Strategy params (same as strategy_mnq.py v8 BEST)
 S = {
-    "tf_minutes": 3,
+    "tf_minutes": 10,
     "ema_fast": 20, "ema_slow": 50, "atr_period": 14,
     "touch_tol": 0.15, "touch_below_max": 0.5,
     "no_entry_after": dt.time(14, 0),
     "stop_buffer": 0.4,
-    "gate_bars": 3, "gate_mfe": 0.2, "gate_tighten": -0.1,
+    "gate_bars": 3, "gate_mfe": 0.2, "gate_tighten": 0.0,
     "be_trigger_r": 0.25, "be_stop_r": 0.15,
     "chand_bars": 25, "chand_mult": 0.3,
     "max_hold_bars": 180,
