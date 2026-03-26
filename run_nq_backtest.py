@@ -1,13 +1,10 @@
 """
 Run MNQ strategy on REAL NQ continuous 1min data (Panama Canal adjusted).
 
-Key change vs QQQ proxy:
-  - Prices are NQ points directly
-  - risk_mnq = risk_nq_points * MNQ_PER_POINT * n_contracts
-  - No more QQQ_TO_NQ=40 approximation
+v10 audit-fixed cost model:
+  - Spread/slippage PER CONTRACT (not flat per trade)
+  - Stop fill models gap-through via Open price
   - Split: IS=2024-01 to 2026-03, OOS=2022-01 to 2023-12
-
-Also compares: QQQ×40 proxy vs real NQ results.
 """
 from __future__ import annotations
 import functools, datetime as dt
@@ -36,12 +33,12 @@ S = {
     "n_contracts": 2,
 }
 
-# MNQ cost model (real slippage)
-MNQ_PER_POINT = 2.0        # $2 per NQ point per MNQ contract
+# MNQ cost model — all costs PER CONTRACT
+MNQ_PER_POINT = 2.0
 COMM_PER_CONTRACT_RT = 2.46
-SPREAD_PER_TRADE = 0.50
-STOP_SLIP = 1.00            # real: mean 1.94 ticks = $0.97 ≈ $1.00
-BE_SLIP = 1.00
+SPREAD_PER_CONTRACT = 0.50     # 1 tick spread per contract
+STOP_SLIP_PER_CONTRACT = 1.00  # real: mean 1.94 ticks
+BE_SLIP_PER_CONTRACT = 1.00
 
 
 def resample(df, minutes):
@@ -74,6 +71,7 @@ def run_nq(df_1min, s=None, use_qqq_proxy=False):
     df = add_indicators(df, s)
 
     high = df["High"].values; low = df["Low"].values; close = df["Close"].values
+    opn = df["Open"].values
     ema_f = df["ema_f"].values; ema_s = df["ema_s"].values; atr = df["atr"].values
     times = df.index.time; dates = df.index.date; n = len(df)
 
@@ -130,7 +128,7 @@ def run_nq(df_1min, s=None, use_qqq_proxy=False):
             bar += 1; continue
 
         risk_mnq = risk_price * price_to_mnq * nc  # in USD
-        entry_cost = COMM_PER_CONTRACT_RT * nc / 2 + SPREAD_PER_TRADE
+        entry_cost = COMM_PER_CONTRACT_RT * nc / 2 + SPREAD_PER_CONTRACT * nc
 
         entry_bar = bar; runner_stop = stop; be_triggered = False
         mfe = 0.0; trade_r = 0.0; end_bar = bar; exit_reason = "timeout"
@@ -156,7 +154,11 @@ def run_nq(df_1min, s=None, use_qqq_proxy=False):
 
             stopped = (trend == 1 and l <= runner_stop) or (trend == -1 and h >= runner_stop)
             if stopped:
-                trade_r = (runner_stop - entry) / risk_price * trend
+                if trend == 1:
+                    fill_price = min(runner_stop, opn[bi]) if opn[bi] < runner_stop else runner_stop
+                else:
+                    fill_price = max(runner_stop, opn[bi]) if opn[bi] > runner_stop else runner_stop
+                trade_r = (fill_price - entry) / risk_price * trend
                 end_bar = bi
                 if be_triggered:
                     be_ref = entry + s["be_stop_r"] * risk_price * trend
@@ -185,8 +187,8 @@ def run_nq(df_1min, s=None, use_qqq_proxy=False):
 
         raw_pnl = trade_r * risk_mnq
         exit_comm = COMM_PER_CONTRACT_RT * nc / 2
-        exit_slip = STOP_SLIP if exit_reason in ("stop", "trail") else 0
-        be_slip = BE_SLIP if exit_reason == "be" else 0
+        exit_slip = STOP_SLIP_PER_CONTRACT * nc if exit_reason in ("stop", "trail") else 0
+        be_slip = BE_SLIP_PER_CONTRACT * nc if exit_reason == "be" else 0
         total_cost = entry_cost + exit_comm + exit_slip + be_slip
         net_pnl = raw_pnl - total_cost
 

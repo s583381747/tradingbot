@@ -1,14 +1,11 @@
 """
 MNQ Prop Firm Strategy — Touch Close EMA20.
 
-NQ-tuned v9 (2026-03-26):
-  gate_tighten: -0.1 → 0.0 (BE on gate fail, not small loss — NQ noise too wide)
-  gate_mfe: 0.20 → 0.25 (stricter gate threshold)
-  be_trigger_r: 0.25 → 0.20 (earlier BE protection)
-  skip_after_win: 1 → 2 (reduce overtrading)
-  slippage: $0.50 → $1.00 (real Tradovate MNQ data)
-
-Result on real NQ 4Y: PF=3.84, $94/day, MaxDD=$429
+v10 (2026-03-26) — audit-fixed cost model:
+  - Spread/slippage now PER CONTRACT (was flat per trade — bug)
+  - Stop fill uses worst-case: min(stop_price, open[bi]) for gap-through
+  - Reverted to v8 params (gate=-0.1) pending re-validation with correct costs
+  - gate=0.0 change is directionally correct but needs re-sweep with fixed costs
 """
 from __future__ import annotations
 import functools, datetime as dt
@@ -72,13 +69,13 @@ STRATEGY = {
 }
 
 # ══════════════════════════════════════════════════════════════
-# MNQ COST MODEL
+# MNQ COST MODEL — all costs are PER CONTRACT
 # ══════════════════════════════════════════════════════════════
 
-COMM_PER_CONTRACT_RT = 2.46
-SPREAD_PER_TRADE = 0.50
-STOP_SLIP = 1.00              # real: Tradovate MNQ mean 1.94 ticks = $0.97 ≈ $1.00
-BE_SLIP = 1.00                # conservative estimate
+COMM_PER_CONTRACT_RT = 2.46   # Tradovate commission per contract round-trip
+SPREAD_PER_CONTRACT = 0.50    # 1 tick spread per contract on entry
+STOP_SLIP_PER_CONTRACT = 1.00 # real: Tradovate MNQ mean 1.94 ticks = $0.97 ≈ $1.00
+BE_SLIP_PER_CONTRACT = 1.00   # conservative: same as stop slip
 QQQ_TO_NQ = 40
 MNQ_PER_POINT = 2.0
 
@@ -109,6 +106,7 @@ def run(df_1min, s=None):
     df = add_indicators(df, s)
 
     high = df["High"].values; low = df["Low"].values; close = df["Close"].values
+    opn = df["Open"].values  # needed for gap-through stop fill
     ema_f = df["ema_f"].values; ema_s_arr = df["ema_s"].values; atr = df["atr"].values
     times = df.index.time; dates = df.index.date; n = len(df)
 
@@ -198,8 +196,8 @@ def run(df_1min, s=None):
 
         risk_mnq = risk_qqq * QQQ_TO_NQ * MNQ_PER_POINT * active_nc
 
-        # Entry cost
-        entry_cost = COMM_PER_CONTRACT_RT * active_nc / 2 + SPREAD_PER_TRADE
+        # Entry cost — all per contract
+        entry_cost = COMM_PER_CONTRACT_RT * active_nc / 2 + SPREAD_PER_CONTRACT * active_nc
 
         # ─── Trade execution (no partial exit, whole position) ───
         entry_bar = bar
@@ -237,10 +235,15 @@ def run(df_1min, s=None):
                     else:
                         runner_stop = min(runner_stop, ns)
 
-            # Stop check
+            # Stop check — model gap-through: fill at worst of (stop, open)
             stopped = (trend == 1 and l <= runner_stop) or (trend == -1 and h >= runner_stop)
             if stopped:
-                trade_r = (runner_stop - entry) / risk_qqq * trend
+                # Gap-through: if bar opened past stop, fill at open (worse)
+                if trend == 1:
+                    fill_price = min(runner_stop, opn[bi]) if opn[bi] < runner_stop else runner_stop
+                else:
+                    fill_price = max(runner_stop, opn[bi]) if opn[bi] > runner_stop else runner_stop
+                trade_r = (fill_price - entry) / risk_qqq * trend
                 end_bar = bi
                 if be_triggered:
                     be_ref = entry + s["be_stop_r"] * risk_qqq * trend
@@ -274,11 +277,11 @@ def run(df_1min, s=None):
             trade_r = (close[min(entry_bar + max_hold, n - 1)] - entry) / risk_qqq * trend
             end_bar = min(entry_bar + max_hold, n - 1)
 
-        # P&L
+        # P&L — all costs per contract
         raw_pnl = trade_r * risk_mnq
         exit_comm = COMM_PER_CONTRACT_RT * active_nc / 2
-        exit_slip = STOP_SLIP if exit_reason in ("stop", "trail") else 0
-        be_slip = BE_SLIP if exit_reason == "be" else 0
+        exit_slip = STOP_SLIP_PER_CONTRACT * active_nc if exit_reason in ("stop", "trail") else 0
+        be_slip = BE_SLIP_PER_CONTRACT * active_nc if exit_reason == "be" else 0
         total_cost = entry_cost + exit_comm + exit_slip + be_slip
         net_pnl = raw_pnl - total_cost
 
