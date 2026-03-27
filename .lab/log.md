@@ -98,5 +98,60 @@ Type: real / Hypothesis: Combine top single-param winners for multiplicative imp
 Result: BEST (R): gate0.0+skip2+be0.20+mfe0.25 → OOS PF=3.933, DD=$418, $/d=+73, Score=35.15
   4Y verified: PF=3.841, PnL=$86,123, DD=$429, ALL YEARS profitable
   IS/OOS PF ratio: 104.2% (OOS > IS!)
-Duration: 300s / Status: keep ★★★ NEW BEST
+Duration: 300s / Status: ~~keep~~ → INVALIDATED by Exp 12 (cost bug)
 Insight: gate_tighten=0.0 + be_trigger=0.20 + gate_mfe=0.25 = aggressive early BE for stalled trades. Only fast-moving trades survive. skip=2 further refines by avoiding overtrading after wins. DD cut from $911→$429 (53%) while PF nearly doubles.
+⚠ NOTE: Exp 10-11 results were inflated by cost bug (spread/slip flat per trade, not per contract). Real PF ~40-50% lower.
+
+## ═══ AUDIT PHASE ═══
+
+## Experiment 12 — Deep Code Audit + Cost Bug Fix
+Branch: research/ml-filter / Commit: 28744c3 / Parent: #11
+Type: audit / Hypothesis: Are backtest results trustworthy?
+Findings:
+  🔴 P0 BUG: spread/slippage was FLAT per trade, not per contract.
+    With 4 MNQ, undercharged ~$4.44/trade = $18K over 4Y.
+    Fix: SPREAD_PER_CONTRACT * nc, STOP_SLIP_PER_CONTRACT * nc, BE_SLIP_PER_CONTRACT * nc
+  🟡 P2: Stop fill assumed exact stop price. Fixed: gap-through model using Open price.
+  ✅ No look-ahead bias, no survivorship bias, no same-bar entry+exit, no data leakage
+Impact: ALL prior PF/DD numbers were INFLATED. Exp 0-11 results are pre-fix.
+Post-fix 3min gate=0.0 NQ: PF=1.193 (was 2.287), DD=$4,615 (was $1,646)
+Status: critical fix applied
+
+## Experiment 13 — Bottleneck Analysis (5 dimensions)
+Branch: research/ml-filter / Parent: #12
+Type: analysis
+Findings:
+  #1 Timeframe: 3min cost/risk=8.4%, raw PF=2.02 but 73% eaten by costs. 10min→4.4%.
+  #2 BE waste: 55% of trades exit at BE, avg MFE=0.90R but exit at +0.01R. 0.91R/trade wasted.
+  #3 Low-ATR trades: P0-P25 ATR has PF=0.630, cost/risk=17%. Losing money.
+  #4 Lunch hour: 12:00 PF=0.937, only losing hour.
+Conclusion: Timeframe is the #1 lever. 10min cuts costs from 8.4%→4.4%.
+
+## Experiment 14 — v11: 10min bar (breakthrough)
+Branch: research/ml-filter / Commit: 32d1496 / Parent: #12
+Type: real
+Changes: tf_minutes=10, gate_tighten=0.0, rest v8 defaults
+Result (4.2Y NQ real, corrected costs, 2 MNQ):
+  PF=1.465 | WR=46.6% | DD=$1,753 | $26/day | Sharpe=2.20 | APR=+13.2%
+  5/5 years profitable | Topstep 50K: ✅ PASS (margin $247)
+  IS(22-23): PF=1.327 | OOS(24-26): PF=1.571
+Status: keep ★ BEST (corrected costs)
+Insight: 10min is the sweet spot — cost/risk drops to 4.4%, DD=$1,753 fits Topstep. But $26/day → 150 days to reach $3K target = too slow for prop firm.
+
+## Experiment 15 — NQ vs MNQ instrument comparison
+Branch: research/ml-filter / Parent: #14
+Type: analysis
+Result:
+  MNQ×2: PF=1.465, cost/risk=4.4%, $26/day, DD=$1,753
+  NQ×1:  PF=1.836, cost/risk=1.0%, $202/day, DD=$5,952
+  Same strategy, same data — only instrument differs.
+  NQ cost 1.0% vs MNQ 4.4% → PF jumps from 1.47 to 1.84.
+Conclusion:
+  ❌ Prop firm (any tier): MNQ too slow, NQ DD too large
+  ✅ Personal $50K account: NQ×1 = $202/day, +102% APR, Sharpe 3.42, DD 12%
+  ✅ Conservative personal: MNQ×3-5 = $39-65/day, APR 20-33%, DD 5-9%
+
+## ═══ CURRENT STATUS ═══
+Strategy is VALIDATED with correct costs on 4.2Y real NQ data.
+Prop firm route is mathematically dead — cost structure prevents viable speed.
+Best path: personal account with NQ×1 or MNQ×3-5.
