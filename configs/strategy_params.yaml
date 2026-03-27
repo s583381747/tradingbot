@@ -1,0 +1,46 @@
+# Strategy Parameters — NQ Futures System
+
+ema20_touch_v11:
+  tf_minutes: 10
+  ema_fast: 20
+  ema_slow: 50
+  atr_period: 14
+  touch_tol: 0.15
+  touch_below_max: 0.5
+  stop_buffer: 0.4
+  gate_bars: 3
+  gate_mfe: 0.2
+  gate_tighten: 0.0  # BE on gate fail (validated 7/7 walk-forward)
+  be_trigger_r: 0.25
+  be_stop_r: 0.15
+  chand_bars: 25
+  chand_mult: 0.3
+  no_entry_after: "14:00"
+  force_close_at: "15:58"
+  daily_loss_r: 2.0
+  skip_after_win: 1
+  status: validated
+  4y_pf: 1.465  # MNQ×2
+  4y_pf_nq: 1.836  # NQ×1
+
+vol_squeeze_30m:
+  tf_minutes: 30
+  ema_fast: 25
+  ema_slow: 60
+  atr_period: 14
+  touch_tol: 0.10
+  stop_mult: 3.0  # ATR multiplier for stop
+  be_trigger_r: 1.0
+  chand_bars: 10
+  chand_mult: 3.0
+  atr_pctile_max: 45
+  bb_width_pctile_max: 55
+  no_entry_after: "14:00"
+  force_close_at: "15:58"
+  status: pending_red_team
+  4y_pf: 1.533
+
+mtf_pullback_short:
+  status: under_investigation
+  short_pf: 1.68
+  trades: 98

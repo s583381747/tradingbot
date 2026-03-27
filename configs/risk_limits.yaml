@@ -1,0 +1,36 @@
+# Risk Limits — NQ Futures System
+
+topstep_50k:
+  max_trailing_dd: 2000
+  profit_target: 3000
+  max_contracts_mnq: 10
+  max_contracts_nq: 2
+  max_daily_loss_r: 2.0
+
+personal_50k:
+  max_trailing_dd_pct: 15
+  max_contracts_nq: 1
+  max_contracts_mnq: 5
+  max_daily_loss_r: 2.0
+
+cost_model:
+  mnq:
+    comm_rt: 2.46
+    spread_per_contract: 0.50
+    stop_slip_per_contract: 1.00
+    be_slip_per_contract: 1.00
+    point_value: 2.0
+  nq:
+    comm_rt: 2.46
+    spread_per_contract: 5.00
+    stop_slip_per_contract: 1.25
+    be_slip_per_contract: 1.25
+    point_value: 20.0
+
+acceptance_criteria:
+  min_pf_oos: 1.3
+  min_walkforward_profitable_pct: 80
+  max_param_sensitivity_range: 0.5
+  min_trades_4y: 200
+  must_survive_2x_cost: true
+  max_1bar_delay_decay_pct: 20

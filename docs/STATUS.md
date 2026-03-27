@@ -1,27 +1,30 @@
-# Red/Blue Team Status — Last Updated: 2026-03-27
+# Project Status — Last Updated: 2026-03-27
 
-## Mission
-Find new NQ strategy opportunities that beat EMA20 touch (PF=1.47, DD=$1,753 on 10min MNQ×2).
-Target: PF > 1.5, DD < $2,000 for Topstep 50K, OR PF > 1.8, DD < 15% for personal $50K.
+## System: quant-team-system-plan.md DEPLOYED
 
-## Current Baseline (v11 — what blue team must beat)
-- 10min bar, EMA20 touch close, gate=0.0, 2 MNQ
-- 4Y NQ: PF=1.465, DD=$1,753, $26/day, Sharpe=2.20
-- NQ×1: PF=1.836, DD=$5,952, $202/day, Sharpe=3.42
-- Core weakness: MNQ cost/risk = 4.4%, eating 73% of raw edge at 3min
+### Completed
+- [x] Directory structure (src/data, alpha, strategy, backtest, risk, execution)
+- [x] CLAUDE.md — system context with cost model, risk rules, agent protocol
+- [x] Agent definitions (4 red/blue team agents)
+- [x] Slash commands (/new-strategy, /full-backtest, /risk-review)
+- [x] Shared backtest engine with correct per-contract costs
+- [x] Walk-forward validator framework
+- [x] Risk policy + strategy spec + config YAML
+- [x] Red/Blue team run #1 complete (6 strategies tested)
+- [x] Tournament run #1 complete (3 strategies, 1 API failure)
+- [x] All existing code migrated to new structure
 
-## Team Status
+### Strategy Pipeline
+| Strategy | Stage | PF | Next Action |
+|----------|-------|-----|-------------|
+| EMA20 Touch v11 | ✅ Validated | 1.47/1.84 | Baseline reference |
+| Vol Squeeze 30m | ⏳ Pending Red Team | 1.53 | Kill Test 8-point |
+| MTF Short-only | ⏳ Investigation | 1.68 | Need more trades |
+| Momentum | ❌ API Error | — | Retry |
 
-### Blue Team
-- [ ] blue-quant: Design 2-3 new strategy ideas
-- [ ] blue-backtest: Validate with walk-forward + stress test
-
-### Red Team
-- [ ] red-critic: Code audit + statistical attack on blue strategies
-- [ ] red-breaker: Destruction tests + worst-case scenarios
-
-## Key Constraints
-- Data: data/barchart_nq/NQ_1min_continuous_RTH.csv (417K 1min bars, 2022-2026)
-- Cost model: PER CONTRACT (spread × nc, slip × nc)
-- Stop fill: gap-through using Open price
-- Shared engine: src/backtest_engine.py
+### Key Findings (from 15 experiments + 7 agent runs)
+1. Entry signal = zero alpha (red team confirmed)
+2. Edge is 100% exit management (gate + BE + chandelier)
+3. Cost/risk is the #1 lever: 30min NQ (0.6%) >> 3min MNQ (8.4%)
+4. Two independent agents converged on vol squeeze approach
+5. NQ is structural trending instrument (mean reversion PF=1.09)

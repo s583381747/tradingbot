@@ -7,7 +7,15 @@
       "Bash(ls -la /Users/mac/project/tradingbot/data/analyses/*.json)",
       "Bash(tee /tmp/tradingbot_analysis.log)",
       "Bash(aws:*)",
-      "Bash(ssh:*)"
+      "Bash(ssh:*)",
+      "Bash(mkdir -p ~/.claude/dc-master/projects/mnq-tradingbot)",
+      "Bash(touch ~/.claude/dc-master/projects/mnq-tradingbot/dc.lock)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(brew list:*)",
+      "Bash(system_profiler SPHardwareDataType)",
+      "Bash(ls:*)"
     ]
   }
 }

@@ -1,34 +1,79 @@
-# Role: Senior Quantitative Project Manager & Lead Researcher
+# CLAUDE.md — NQ Futures Quantitative Trading System
 
-## 1. 核心定位 (Core Identity)
-你现在是本项目的首席量化项目经理兼核心开发（CTO级别）。你的目标是协助我构建、回测、审计并实盘部署量化交易策略。
-你拥有极高的统计学直觉、严谨的工程能力，并且对"过度拟合 (Overfitting)"、"未来函数 (Look-ahead Bias)"和"统计噪音"具有零容忍度。你不只是一个写代码的助手，你更是我的"投研合伙人"和"审计员"。
+## Project Overview
+NQ/MNQ futures intraday trading system. Validated on 4.2Y real NQ continuous contract data.
+Core instruments: NQ ($20/pt) and MNQ ($2/pt) on CME Globex.
+Goal: Sharpe > 2.0, MaxDD < 15% of account, positive every calendar year.
 
-## 2. 投研哲学与沟通准则 (Philosophy & Communication)
-* **数据高于直觉：** 当我的直觉逻辑（例如"震荡市不该做"）与回测数据（例如"过滤震荡会滤掉大赢家"）冲突时，永远站在数据这边，并无情地指出我逻辑中的盲区。
-* **警惕过度拟合：** 如果某个参数优化带来的提升（如 PF 提升 < 0.05）在统计学上是不显著的（处于多重比较的噪声范围内），你必须明确警告我，并建议放弃该复杂性。
-* **奥卡姆剃刀：** 偏爱简单的逻辑、少量的参数。增加任何一个过滤条件或 Indicator，都必须有极强的 OOS（样本外）数据支撑。
-* **沟通风格：** 极其干练、直击要害。使用 CTO Audit 的风格。先下结论，再列数据（多用表格对比 IS vs OOS），最后给出洞察（Why）和下一步建议。
+## Current Best Strategy
+**Volatility Squeeze Breakout (30min NQ)** — PF=1.53, Sharpe=2.33, cost/risk=0.6%
+- Two independent agents converged on this approach
+- Trend following + vol compression filter + pullback entry
+- Edge is in EXIT SYSTEM (gate + BE + chandelier), NOT entry signal
 
-## 3. 投研工作流 (Research Workflow)
-我们在进行任何新 Idea 测试时，必须遵循以下闭环：
-1. **Hypothesis (假设)：** 明确我们要测试的金融逻辑是什么。
-2. **Implementation (实现)：** 编写零未来函数、逐 Bar 或向量化的高效回测代码。
-3. **In-Sample & Out-of-Sample (IS/OOS 测试)：** 必须分离样本内外数据，计算衰减率。
-4. **CTO Audit (审计)：** - 检查交易次数是否大幅下降（过滤了信号还是过滤了噪音？）
-   - 检查大赢家（如 5R+ 交易）是否被错误过滤。
-   - 评估改善是否在统计噪声范围内。
-5. **Next Step (决策)：** 决定是合并该逻辑、废弃该逻辑，还是转向下一个研发阶段。
+## Critical Finding (Red Team Validated)
+**Entry signals provide ZERO alpha.** Random entry + current exit system achieves PF=1.484.
+54.5% of random strategies beat EMA20 touch. p=0.50. All edge comes from:
+1. MFE gate (cut losers fast at breakeven)
+2. BE trigger + stop move (protect small winners)
+3. Chandelier trail (let big winners run)
 
-## 4. 代码与工程规范 (Engineering Standards)
-* **性能优先：** 面对 Tick 或 1分钟级别海量数据，优先使用 `pandas` 向量化操作或 `numpy`。如果遇到逐 Bar 循环（如动态止损、追踪止损），使用 `Numba` 进行 JIT 加速，或写出极简的逻辑。
-* **零未来函数：** 在计算任何信号时，必须确保使用的是 `t-1` 或已收盘的 K 线数据。绝对禁止使用未来的高低点来定义当前的区间。
-* **模块化：** 保持入场逻辑（Phase 1）、过滤逻辑（Phase 2）和出场/订单管理逻辑（Phase 3）的代码解耦，方便单一变量测试。
+## Technology Stack
+- Python 3.13+, pandas, numpy
+- Data: NQ 1-min continuous RTH (Barchart, Panama Canal adjusted)
+- Backtest: custom vectorized engine (src/backtest/engine.py)
+- Costs: per-contract model with gap-through stop fill
+- No external backtest frameworks (no zipline/backtrader)
 
-## 5. 当前项目上下文 (Current Project Context)
-* **策略内核：** EMA20 趋势跟随回调（Touch）策略。
-* **核心认知：** 策略的收益呈厚尾分布（极少数的 5R+ 贡献主要利润）。所有入场点在当下看起来高度同质化。
-* **当前研发阶段：** 已放弃"入场前静态震荡过滤（Chop Detection）"，全面转向 **Phase 3：入场后的动态订单管理与出场优化（Trade-During Management & Exits）**，例如基于入场后 3-5 根 Bar 表现的 Time-based exit 或 Breakeven 机制。
+## Cost Model (MANDATORY — all agents must use)
+All costs are PER CONTRACT. Never flat per trade.
+```python
+MNQ: comm=$2.46 RT, spread=$0.50×nc, stop_slip=$1.00×nc, be_slip=$1.00×nc
+NQ:  comm=$2.46 RT, spread=$5.00×nc, stop_slip=$1.25×nc, be_slip=$1.25×nc
+```
+Stop fill: gap-through model — `fill_price = min(stop, bar_open)` for longs.
+Shared engine: `src/backtest/engine.py`
 
-## 6. 指令执行
-每次对话开始或评估回测结果时，请自动进入"CTO 审计"模式，直接给出你的专业判断，不要说废话。
+## Data
+- `data/barchart_nq/NQ_1min_continuous_RTH.csv` — 417K bars, 2021-12 to 2026-03
+- Timezone: file is CT, add 1 hour for ET
+- RTH: 09:30-16:00 ET
+- IS = 2022-2023, OOS = 2024-2026 (forward walk)
+
+## Risk Hard Rules (ALL agents must obey)
+- MaxDD < $2,000 for Topstep 50K evaluation
+- MaxDD < 15% of account for personal trading
+- Daily loss limit: 2R (R = risk per trade)
+- No entry after 14:00 ET, force close at 15:58 ET
+- No look-ahead bias — signals use only closed bar data
+- New strategies must pass 4Y IS+OOS + walk-forward before acceptance
+
+## Coding Standards
+- All strategy functions return a DataFrame with columns: pnl, r, exit, date, cost, risk
+- Stop fill must use gap-through model (never fill at exact stop price)
+- Cost model must be per-contract (check with: cost/risk% should be 0.4-5%)
+- float64 precision, UTC timestamps internally, ET for display
+
+## Agent Collaboration Protocol
+- Strategy code → `src/strategy/implementations/`
+- Backtest reports → `src/backtest/reports/`
+- Risk reviews → `docs/RISK_REVIEW_*.md`
+- All agents update `docs/STATUS.md` on completion
+- Red team agents may MESSAGE blue team directly when finding fatal flaws
+
+## Directory Ownership (prevent Git conflicts)
+- alpha-researcher → `src/alpha/`, `docs/STRATEGY_SPEC.md`
+- backtest-engineer → `src/backtest/`, `tests/test_backtest_*`
+- risk-manager → `src/risk/`, `docs/RISK_*.md`
+- execution-engineer → `src/execution/`, `tests/test_execution_*`
+- data-engineer → `src/data/`, `configs/`
+- strategies → `src/strategy/implementations/`
+
+## Experiment History (15 experiments, see .lab/log.md)
+Key conclusions:
+1. ML entry filters don't work (AUC=0.53, 70 features tested)
+2. Volume S/R targets are harmful (cap big winners)
+3. DCP inversely correlated with big winners
+4. gate_tighten=0.0 (BE on gate fail) validated on 7/7 walk-forward periods
+5. 30min NQ bars optimal for cost/risk (0.4-0.6% vs 4.4-8.4% on 3min MNQ)
+6. Cost bug found and fixed: spread/slip must be per contract, not flat
